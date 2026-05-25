@@ -1,0 +1,1346 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Monitoring Temuan BPK — Bina Marga DPUPR Karanganyar</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@2.47.0/tabler-icons.min.css">
+
+<!-- ═══════════════════════════════════════════════════════
+     FIREBASE SDK — Module type
+═══════════════════════════════════════════════════════ -->
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged }
+  from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+import { getFirestore, collection, doc, setDoc, getDoc, getDocs,
+  deleteDoc, onSnapshot, query, orderBy, serverTimestamp, writeBatch }
+  from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+// ════════════════════════════════════════════
+// FIREBASE CONFIG — GANTI DENGAN CONFIG ANDA
+// Lihat panduan setup di README.md
+// ════════════════════════════════════════════
+const firebaseConfig = {
+  apiKey: "AIzaSyADY38rG0vC5aGY4IC1ZtleuOUkVR7O7ys",
+  authDomain: "analisis-temuan.firebaseapp.com",
+  projectId: "analisis-temuan",
+  storageBucket: "analisis-temuan.firebasestorage.app",
+  messagingSenderId: "890809765565",
+  appId: "1:890809765565:web:641a7b283b7f4b9fb6f1d4",
+  measurementId: "G-WGP86XJSVJ"
+  };
+
+const app  = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db   = getFirestore(app);
+
+// Expose to global scope for non-module JS
+window.DB  = db;
+window.AUTH = auth;
+window.FS  = { collection, doc, setDoc, getDoc, getDocs, deleteDoc,
+               onSnapshot, query, orderBy, serverTimestamp, writeBatch };
+window.currentUser = null;
+window.currentRole = null;
+window.unsubscribe = null;
+
+// ── Auth State ──────────────────────────────
+onAuthStateChanged(auth, async (user) => {
+  if (user) {
+    try {
+      const snap = await getDoc(doc(db, 'users', user.uid));
+      if (snap.exists()) {
+        const ud = snap.data();
+        window.currentUser = { uid: user.uid, email: user.email, ...ud };
+        window.currentRole = ud.role || 'viewer';
+        showApp();
+        startRealtimeListener();
+        applyRoleUI();
+      } else {
+        await signOut(auth);
+        toast('Akun tidak terdaftar di sistem. Hubungi Administrator.', 'err');
+        showLogin();
+      }
+    } catch(e) {
+      toast('Error: ' + e.message, 'err');
+      showLogin();
+    }
+  } else {
+    window.currentUser = null;
+    window.currentRole = null;
+    if (window.unsubscribe) { window.unsubscribe(); window.unsubscribe = null; }
+    showLogin();
+  }
+});
+
+// ── Realtime Listener ──────────────────────
+function startRealtimeListener() {
+  if (window.unsubscribe) window.unsubscribe();
+  const q = query(collection(db, 'paket'), orderBy('id', 'asc'));
+  window.unsubscribe = onSnapshot(q, (snapshot) => {
+    DATA = [];
+    snapshot.forEach(d => DATA.push({ ...d.data(), _docId: d.id }));
+    document.getElementById('lupd').textContent =
+      new Date().toLocaleTimeString('id-ID');
+    const cur = document.querySelector('.page.on');
+    if (cur) {
+      const pid = cur.id.replace('pg-','');
+      const m = {dashboard:rDash,semua:rSemua,belum:rBelum,
+                  cicilan:rCicilan,lhp25:rLhp25,lunas:rLunas};
+      if (m[pid]) m[pid]();
+    }
+  }, err => toast('Realtime error: ' + err.message, 'err'));
+}
+
+// ── Auth Actions ────────────────────────────
+window.doLogin = async function() {
+  const email = document.getElementById('li-email').value.trim();
+  const pass  = document.getElementById('li-pass').value;
+  const btn   = document.getElementById('li-btn');
+  if (!email || !pass) { toast('Email dan password wajib diisi','err'); return; }
+  btn.disabled = true; btn.textContent = 'Memproses...';
+  try {
+    await signInWithEmailAndPassword(auth, email, pass);
+  } catch(e) {
+    const msgs = {
+      'auth/wrong-password':'Password salah.',
+      'auth/invalid-credential':'Email atau password salah.',
+      'auth/user-not-found':'Email tidak terdaftar.',
+      'auth/invalid-email':'Format email tidak valid.',
+      'auth/too-many-requests':'Terlalu banyak percobaan. Coba lagi nanti.',
+    };
+    toast(msgs[e.code] || e.message, 'err');
+    btn.disabled = false; btn.textContent = 'Masuk';
+  }
+};
+
+window.doLogout = async function() {
+  if (!confirm('Yakin ingin keluar?')) return;
+  await signOut(auth);
+};
+
+window.li_keydown = function(e) { if (e.key==='Enter') doLogin(); };
+
+// ── Role UI ─────────────────────────────────
+function applyRoleUI() {
+  const role = window.currentRole;
+  document.getElementById('user-name').textContent =
+    window.currentUser.nama || window.currentUser.email;
+  document.getElementById('user-role').textContent =
+    {admin:'Administrator',editor:'Editor',viewer:'Viewer'}[role] || role;
+  // Role-gated nav items
+  document.querySelectorAll('[data-role="admin"]').forEach(el =>
+    el.style.display = role==='admin' ? '' : 'none');
+  document.querySelectorAll('[data-role="editor"]').forEach(el =>
+    el.style.display = (role==='admin'||role==='editor') ? '' : 'none');
+  // Top-bar Tambah Paket button
+  const tb = document.querySelector('.topbar-r .btn-p');
+  if (tb) tb.style.display = (role==='admin'||role==='editor') ? '' : 'none';
+}
+
+// ── Firestore CRUD ──────────────────────────
+window.fsSave = async function(dataObj) {
+  const d = Object.assign({}, dataObj);
+  delete d._docId;
+  d.updatedAt  = serverTimestamp();
+  d.updatedBy  = window.currentUser?.email || '';
+  await setDoc(doc(db, 'paket', String(d.id)), d);
+};
+
+window.fsDelete = async function(id) {
+  await deleteDoc(doc(db, 'paket', String(id)));
+};
+
+window.fsInitialLoad = async function() {
+  const snap = await getDocs(collection(db, 'paket'));
+  if (snap.size > 0) {
+    toast('Data sudah ada (' + snap.size + ' paket). Dibatalkan.', 'err'); return;
+  }
+  loadDefault();
+  const batch = writeBatch(db);
+  let n = 0;
+  DATA.forEach(d => {
+    const obj = Object.assign({}, d);
+    delete obj._docId;
+    obj.updatedAt = serverTimestamp(); obj.updatedBy = 'system-init';
+    batch.set(doc(db,'paket',String(d.id)), obj); n++;
+  });
+  await batch.commit();
+  toast('✓ ' + n + ' paket berhasil dimuat ke Firestore!');
+  logActivity('initial_load', n + ' paket dimuat');
+};
+
+window.logActivity = async function(action, detail) {
+  try {
+    const ref = doc(collection(db,'activity_log'));
+    await setDoc(ref, {
+      action, detail,
+      uid:   window.currentUser?.uid   || '',
+      email: window.currentUser?.email || '',
+      role:  window.currentRole        || '',
+      ts: serverTimestamp()
+    });
+  } catch(e) { /* silent */ }
+};
+
+// ── User Management (Admin) ──────────────────
+window.loadUsers = async function() {
+  const snap = await getDocs(collection(db,'users'));
+  const users = [];
+  snap.forEach(d => users.push({uid:d.id,...d.data()}));
+  document.getElementById('tbl-users').innerHTML = users.map((u,i) => `
+    <tr>
+      <td>${i+1}</td>
+      <td>${u.nama||'—'}</td>
+      <td>${u.email||'—'}</td>
+      <td><span class="b ${u.role==='admin'?'b-red':u.role==='editor'?'b-amber':'b-blue'}">${u.role}</span></td>
+      <td>${u.createdAt?new Date(u.createdAt.seconds*1000).toLocaleDateString('id-ID'):'—'}</td>
+      <td><button class="btn btn-sm" onclick="openEditUser('${u.uid}','${(u.nama||'').replace(/'/g,'')}','${u.role||'viewer'}')">
+        <i class="ti ti-edit"></i>Edit Role</button></td>
+    </tr>`).join('');
+};
+
+window.openEditUser = function(uid, nama, role) {
+  document.getElementById('eu-uid').value  = uid;
+  document.getElementById('eu-nama').value = nama;
+  document.getElementById('eu-role').value = role;
+  document.getElementById('mo-edituser').classList.add('open');
+};
+
+window.saveUserRole = async function() {
+  const uid  = document.getElementById('eu-uid').value;
+  const nama = document.getElementById('eu-nama').value;
+  const role = document.getElementById('eu-role').value;
+  await setDoc(doc(db,'users',uid), {nama,role}, {merge:true});
+  logActivity('update_user_role', nama + ' → ' + role);
+  toast('Role pengguna diperbarui');
+  closeMo('mo-edituser');
+  loadUsers();
+};
+</script>
+
+<style>
+
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#f4f5f7;--sur:#fff;--sur2:#f0f2f5;--bd:#e3e6ea;--bd2:#cdd1d9;
+  --tx:#1c2030;--tx2:#5c6475;--tx3:#9199a8;
+  --blue:#1a56db;--bluebg:#eff4ff;--bluetx:#1e429f;
+  --green:#057a55;--greenbg:#f3faf7;--greentx:#014737;
+  --red:#e02424;--redbg:#fdf2f2;--redtx:#771d1d;
+  --amber:#d97706;--amberbg:#fffbeb;--ambertx:#78350f;
+  --r:8px;--rl:12px;
+}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;background:var(--bg);color:var(--tx);font-size:13px;line-height:1.5}
+.app{display:flex;min-height:100vh}
+
+/* sidebar */
+.sb{width:216px;min-width:216px;background:var(--sur);border-right:1px solid var(--bd);display:flex;flex-direction:column}
+.sb-logo{padding:18px 16px 12px;border-bottom:1px solid var(--bd)}
+.sb-logo .org{font-size:10px;color:var(--tx3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:3px}
+.sb-logo .appnm{font-size:13px;font-weight:700;color:var(--tx);line-height:1.35}
+.sb-nav{padding:8px 0;flex:1;overflow-y:auto}
+.nav-sec{font-size:10px;color:var(--tx3);text-transform:uppercase;letter-spacing:.07em;padding:12px 16px 4px;font-weight:700}
+.ni{display:flex;align-items:center;gap:8px;padding:8px 16px;cursor:pointer;color:var(--tx2);font-size:13px;font-weight:500;border:none;background:none;width:100%;text-align:left;border-left:3px solid transparent;transition:.12s}
+.ni:hover{background:var(--bg);color:var(--tx)}
+.ni.on{background:var(--bluebg);color:var(--bluetx);border-left-color:var(--blue)}
+.ni i{font-size:16px;width:18px;flex-shrink:0}
+.sb-foot{padding:10px 16px;border-top:1px solid var(--bd);font-size:11px;color:var(--tx3)}
+
+/* main */
+.main{flex:1;overflow:auto;display:flex;flex-direction:column}
+.topbar{background:var(--sur);border-bottom:1px solid var(--bd);padding:11px 22px;display:flex;align-items:center;justify-content:space-between;gap:12px;position:sticky;top:0;z-index:20}
+.topbar-l .t1{font-size:15px;font-weight:700;color:var(--tx)}
+.topbar-l .t2{font-size:11px;color:var(--tx3);margin-top:1px}
+.topbar-r{display:flex;gap:8px}
+
+.page{padding:18px 22px;display:none}
+.page.on{display:block}
+
+/* buttons */
+.btn{display:inline-flex;align-items:center;gap:6px;padding:6px 13px;border-radius:var(--r);font-size:13px;font-weight:500;cursor:pointer;border:1px solid var(--bd2);background:var(--sur);color:var(--tx);font-family:inherit;transition:.12s}
+.btn:hover{background:var(--bg)}
+.btn-p{background:var(--blue);color:#fff;border-color:var(--blue)}
+.btn-p:hover{background:#1648c0}
+.btn-d{background:var(--red);color:#fff;border-color:var(--red)}
+.btn-d:hover{background:#c41f1f}
+.btn-sm{padding:5px 10px;font-size:12px}
+.btn i{font-size:15px}
+
+/* stat cards */
+.sg{display:grid;grid-template-columns:repeat(auto-fit,minmax(155px,1fr));gap:11px;margin-bottom:18px}
+.sc{background:var(--sur);border:1px solid var(--bd);border-radius:var(--rl);padding:13px 15px}
+.sc .sl{font-size:10px;color:var(--tx3);font-weight:700;text-transform:uppercase;letter-spacing:.05em;margin-bottom:5px}
+.sc .sv{font-size:21px;font-weight:700;color:var(--tx);line-height:1}
+.sc .ss{font-size:11px;color:var(--tx3);margin-top:3px}
+.sc.red{border-left:3px solid var(--red)}.sc.red .sv{color:var(--red)}
+.sc.green{border-left:3px solid var(--green)}.sc.green .sv{color:var(--green)}
+.sc.amber{border-left:3px solid var(--amber)}.sc.amber .sv{color:var(--amber)}
+.sc.blue{border-left:3px solid var(--blue)}.sc.blue .sv{color:var(--blue)}
+
+/* badges */
+.b{display:inline-block;padding:2px 8px;border-radius:100px;font-size:11px;font-weight:600;white-space:nowrap}
+.b-red{background:var(--redbg);color:var(--redtx)}
+.b-green{background:var(--greenbg);color:var(--greentx)}
+.b-amber{background:var(--amberbg);color:var(--ambertx)}
+.b-blue{background:var(--bluebg);color:var(--bluetx)}
+.b-gray{background:var(--sur2);color:var(--tx2)}
+.b-purple{background:#f5f3ff;color:#4a1d96}
+
+/* progress bar */
+.pb{height:5px;background:var(--bd);border-radius:3px;overflow:hidden}
+.pbf{height:100%;border-radius:3px}
+
+/* alert */
+.al{padding:9px 13px;border-radius:var(--r);font-size:12px;margin-bottom:8px;display:flex;align-items:flex-start;gap:8px;border:1px solid}
+.al i{font-size:15px;flex-shrink:0;margin-top:1px}
+.al.red{background:var(--redbg);color:var(--redtx);border-color:#f8b4b4}
+.al.amber{background:var(--amberbg);color:var(--ambertx);border-color:#fcd34d}
+.al.blue{background:var(--bluebg);color:var(--bluetx);border-color:#bfdbfe}
+
+/* table */
+.tw{overflow-x:auto;border-radius:var(--rl);border:1px solid var(--bd)}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th{background:var(--sur2);padding:8px 11px;text-align:left;font-weight:700;font-size:10px;color:var(--tx2);text-transform:uppercase;letter-spacing:.05em;border-bottom:1px solid var(--bd);white-space:nowrap}
+td{padding:8px 11px;border-bottom:1px solid var(--bd);vertical-align:middle}
+tr:last-child td{border-bottom:none}
+tr:hover td{background:#fafbfc}
+.nr{text-align:right;font-variant-numeric:tabular-nums}
+.rr td{background:#fff8f8!important}
+.ra td{background:#fffdf0!important}
+
+/* section header */
+.sh{display:flex;align-items:center;justify-content:space-between;margin-bottom:11px}
+.sh h2{font-size:14px;font-weight:700}
+.div{height:1px;background:var(--bd);margin:18px 0}
+
+/* chart */
+.cr{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:18px}
+.cb{background:var(--sur);border:1px solid var(--bd);border-radius:var(--rl);padding:14px}
+.cb h3{font-size:12px;font-weight:700;color:var(--tx);margin-bottom:10px}
+
+/* filter row */
+.fr{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:11px;align-items:center}
+.fr input[type=text],.fr select{padding:6px 9px;border:1px solid var(--bd2);border-radius:var(--r);font-size:12px;color:var(--tx);background:var(--sur);outline:none;font-family:inherit}
+.fr input[type=text]{min-width:200px}
+.fr input[type=text]:focus,.fr select:focus{border-color:var(--blue);box-shadow:0 0 0 2px #bfdbfe}
+
+/* modal */
+.mo{display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:100;justify-content:center;align-items:flex-start;padding:36px 12px;overflow-y:auto}
+.mo.open{display:flex}
+.md{background:var(--sur);border-radius:var(--rl);width:740px;max-width:98vw;box-shadow:0 8px 40px rgba(0,0,0,.18)}
+.md-sm{width:480px}
+.mh{padding:14px 18px;border-bottom:1px solid var(--bd);display:flex;align-items:center;justify-content:space-between}
+.mh h2{font-size:14px;font-weight:700}
+.mc{background:none;border:none;cursor:pointer;font-size:18px;color:var(--tx3);padding:0;line-height:1}
+.mb{padding:18px;max-height:68vh;overflow-y:auto}
+.mf{padding:11px 18px;border-top:1px solid var(--bd);display:flex;justify-content:flex-end;gap:8px}
+
+/* form */
+.fgi{display:flex;flex-direction:column;gap:3px}
+.fgi.full{grid-column:1/-1}
+.fgi label{font-size:11px;font-weight:700;color:var(--tx2)}
+.fgi input,.fgi select,.fgi textarea{padding:6px 9px;border:1px solid var(--bd2);border-radius:var(--r);font-size:12px;color:var(--tx);background:var(--sur);outline:none;font-family:inherit}
+.fgi input:focus,.fgi select:focus,.fgi textarea:focus{border-color:var(--blue);box-shadow:0 0 0 2px #bfdbfe}
+.fgi textarea{resize:vertical;min-height:55px}
+.fg2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.fsec{font-size:10px;font-weight:700;color:var(--tx3);text-transform:uppercase;letter-spacing:.07em;margin:14px 0 8px;padding-bottom:4px;border-bottom:1px solid var(--bd)}
+
+/* cicilan rows */
+.ci-row{display:grid;grid-template-columns:130px 1fr 120px 30px;gap:5px;align-items:center;margin-bottom:5px}
+.ci-row input{padding:5px 7px;border:1px solid var(--bd2);border-radius:var(--r);font-size:11px;font-family:inherit;color:var(--tx);background:var(--sur);width:100%}
+.ci-del{background:none;border:1px solid var(--bd2);border-radius:var(--r);cursor:pointer;width:26px;height:26px;display:flex;align-items:center;justify-content:center;color:var(--red);font-size:13px}
+
+/* action buttons */
+.ab{display:flex;gap:3px}
+.ib{background:none;border:none;cursor:pointer;padding:4px;border-radius:var(--r);color:var(--tx3);font-size:15px;display:inline-flex;align-items:center}
+.ib:hover{background:var(--sur2);color:var(--tx)}
+.ib.e:hover{color:var(--blue)}
+.ib.d:hover{color:var(--red)}
+
+/* tahap dots */
+.td{display:flex;gap:3px;align-items:center}
+.dot{width:22px;height:22px;border-radius:50%;font-size:9px;font-weight:700;display:flex;align-items:center;justify-content:center;border:1.5px solid var(--bd);flex-shrink:0}
+.dot.done{background:var(--green);color:#fff;border-color:var(--green)}
+.dot.act{background:var(--blue);color:#fff;border-color:var(--blue)}
+.dot.pend{background:var(--sur);color:var(--tx3)}
+.dot.ov{background:var(--red);color:#fff;border-color:var(--red)}
+.dotline{width:8px;height:1px;background:var(--bd)}
+
+/* upload */
+.uz{border:2px dashed var(--bd2);border-radius:var(--rl);padding:28px;text-align:center;cursor:pointer;transition:.18s}
+.uz:hover,.uz.drag{border-color:var(--blue);background:var(--bluebg)}
+.uz i{font-size:30px;color:var(--tx3);margin-bottom:6px}
+.uz p{font-size:13px;color:var(--tx2);margin-bottom:3px}
+.uz span{font-size:11px;color:var(--tx3)}
+
+/* toast */
+#toast{position:fixed;bottom:22px;right:22px;background:#1c2030;color:#fff;padding:9px 15px;border-radius:var(--r);font-size:12px;font-weight:600;z-index:999;opacity:0;transition:opacity .3s;pointer-events:none}
+#toast.show{opacity:1}
+
+.leg{display:flex;flex-wrap:wrap;gap:10px;margin-top:8px;font-size:11px;color:var(--tx2)}
+.legdot{width:10px;height:10px;border-radius:2px;display:inline-block;margin-right:3px}
+
+
+#login-screen{display:flex;min-height:100vh;align-items:center;justify-content:center;background:linear-gradient(135deg,#1a3a6b 0%,#2563eb 100%)}
+.login-box{background:#fff;border-radius:16px;padding:40px 36px;width:380px;box-shadow:0 20px 60px rgba(0,0,0,.2)}
+.login-logo{text-align:center;margin-bottom:24px}
+.login-logo .org{font-size:11px;color:var(--tx3);text-transform:uppercase;letter-spacing:.08em;margin-bottom:4px}
+.login-logo h1{font-size:18px;font-weight:700;color:var(--tx);line-height:1.3}
+.login-logo .sub{font-size:12px;color:var(--tx2);margin-top:4px}
+.login-sep{height:1px;background:var(--bd);margin:20px 0}
+.login-field{margin-bottom:14px}
+.login-field label{display:block;font-size:11px;font-weight:700;color:var(--tx2);margin-bottom:5px;text-transform:uppercase;letter-spacing:.04em}
+.login-field input{width:100%;padding:10px 12px;border:1px solid var(--bd2);border-radius:var(--r);font-size:13px;color:var(--tx);outline:none;font-family:inherit}
+.login-field input:focus{border-color:var(--blue);box-shadow:0 0 0 3px #bfdbfe}
+.login-btn{width:100%;padding:11px;background:var(--blue);color:#fff;border:none;border-radius:var(--r);font-size:14px;font-weight:600;cursor:pointer;margin-top:4px;font-family:inherit;transition:.15s}
+.login-btn:hover{background:#1648c0}
+.login-btn:disabled{background:#93c5fd;cursor:not-allowed}
+.login-info{margin-top:16px;padding:10px 12px;background:var(--bluebg);border-radius:var(--r);font-size:11px;color:var(--bluetx)}
+#app-screen{display:none}
+.sb-user{padding:12px 16px;border-top:1px solid var(--bd)}
+.sb-user .uname{font-size:12px;font-weight:600;color:var(--tx)}
+.sb-user .urole{font-size:10px;color:var(--tx3);margin-top:1px}
+.sb-user .upd{font-size:10px;color:var(--tx3);margin-top:4px}
+.logout-btn{display:flex;align-items:center;gap:5px;font-size:11px;color:var(--red);cursor:pointer;background:none;border:none;padding:6px 0 0;font-family:inherit}
+.logout-btn:hover{opacity:.8}
+.log-item{padding:8px 12px;border-bottom:1px solid var(--bd);font-size:12px}
+.log-item:last-child{border-bottom:none}
+.log-item .log-ts{font-size:10px;color:var(--tx3)}
+.log-item .log-act{font-weight:600;color:var(--tx)}
+.log-item .log-user{color:var(--tx2)}
+code{background:var(--sur2);padding:1px 5px;border-radius:4px;font-family:monospace;font-size:11px}
+
+</style>
+</head>
+<body>
+<div id="toast"></div>
+
+<!-- ══════ LOGIN ══════ -->
+<div id="login-screen">
+  <div class="login-box">
+    <div class="login-logo">
+      <div class="org">Pemerintah Kabupaten Karanganyar</div>
+      <h1>Monitoring Temuan BPK RI</h1>
+      <div class="sub">DPUPR — Bidang Bina Marga</div>
+    </div>
+    <div class="login-sep"></div>
+    <div class="login-field">
+      <label>Email</label>
+      <input id="li-email" type="email" placeholder="nama@karanganyarkab.go.id" onkeydown="li_keydown(event)">
+    </div>
+    <div class="login-field">
+      <label>Password</label>
+      <input id="li-pass" type="password" placeholder="••••••••" onkeydown="li_keydown(event)">
+    </div>
+    <button id="li-btn" class="login-btn" onclick="doLogin()">Masuk</button>
+    <div class="login-info">
+      <strong>Akses terbatas.</strong> Hubungi Administrator DPUPR untuk mendapatkan akun login.
+    </div>
+  </div>
+</div>
+
+<!-- ══════ APP ══════ -->
+<div id="app-screen">
+<div class="app">
+<aside class="sb">
+  <div class="sb-logo">
+    <div class="org">DPUPR Kab. Karanganyar</div>
+    <div class="appnm">Monitoring Temuan BPK RI</div>
+  </div>
+  <nav class="sb-nav">
+    <div class="nav-sec">Menu Utama</div>
+    <button class="ni on" data-page="dashboard"><i class="ti ti-layout-dashboard"></i>Dashboard</button>
+    <button class="ni" data-page="semua"><i class="ti ti-table"></i>Semua Data</button>
+    <button class="ni" data-page="belum"><i class="ti ti-alert-triangle"></i>Belum Setor</button>
+    <button class="ni" data-page="cicilan"><i class="ti ti-refresh-alert"></i>Cicilan Berjalan</button>
+    <button class="ni" data-page="lhp25"><i class="ti ti-file-invoice"></i>LHP TA 2025</button>
+    <button class="ni" data-page="lunas"><i class="ti ti-circle-check"></i>Sudah Lunas</button>
+    <div class="nav-sec" data-role="editor">Data</div>
+    <button class="ni" data-page="tambah" data-role="editor"><i class="ti ti-plus"></i>Tambah Paket</button>
+    <button class="ni" data-page="impor" data-role="editor"><i class="ti ti-upload"></i>Import Excel</button>
+    <div class="nav-sec" data-role="admin">Administrasi</div>
+    <button class="ni" data-page="users" data-role="admin"><i class="ti ti-users"></i>Kelola Pengguna</button>
+    <button class="ni" data-page="log" data-role="admin"><i class="ti ti-list-details"></i>Log Aktivitas</button>
+    <button class="ni" data-page="setup" data-role="admin"><i class="ti ti-database-import"></i>Setup Awal</button>
+  </nav>
+  <div class="sb-user">
+    <div class="uname" id="user-name">—</div>
+    <div class="urole" id="user-role">—</div>
+    <div class="upd">Realtime · <span id="lupd">—</span></div>
+    <button class="logout-btn" onclick="doLogout()"><i class="ti ti-logout" style="font-size:13px"></i>Keluar</button>
+  </div>
+</aside>
+<div class="main">
+  <div class="topbar">
+    <div class="topbar-l">
+      <div class="t1" id="pg-title">Dashboard</div>
+      <div class="t2" id="pg-sub">Rekapitulasi temuan BPK RI — Bina Marga DPUPR Karanganyar</div>
+    </div>
+    <div class="topbar-r">
+      <button class="btn btn-sm" onclick="dlExcel()"><i class="ti ti-download"></i>Download Excel</button>
+      <button class="btn btn-p btn-sm" data-role="editor" onclick="goPage('tambah')"><i class="ti ti-plus"></i>Tambah Paket</button>
+    </div>
+  </div>
+
+  <!-- DASHBOARD -->
+  <div class="page on" id="pg-dashboard">
+    <div id="dash-alerts"></div>
+    <div class="sg" id="dash-stats"></div>
+    <div class="cr">
+      <div class="cb"><h3>Status pembayaran (jumlah paket)</h3>
+        <div style="position:relative;height:190px"><canvas id="cStatus"></canvas></div>
+        <div class="leg" id="leg-status"></div>
+      </div>
+      <div class="cb"><h3>Sisa piutang per sumber (Rp juta)</h3>
+        <div style="position:relative;height:190px"><canvas id="cSumber"></canvas></div>
+      </div>
+    </div>
+    <div class="cb" style="margin-bottom:18px">
+      <h3>10 penyedia sisa piutang terbesar &nbsp;<span style="color:var(--red)">●Kel.A</span> <span style="color:var(--amber)">●Kel.B</span> <span style="color:var(--blue)">●Kel.C</span></h3>
+      <div id="c10wrap" style="position:relative"><canvas id="cTop10"></canvas></div>
+    </div>
+    <div class="sh"><h2>Penyedia kritis — perlu tindak lanjut segera</h2></div>
+    <div class="tw"><table><thead><tr>
+      <th>Penyedia</th><th>Nama Paket</th><th>Sumber</th>
+      <th class="nr">Total Temuan</th><th class="nr">Sisa (Rp)</th>
+      <th>%</th><th>Tahap SP</th><th>Status</th><th>Aksi</th>
+    </tr></thead><tbody id="tbl-kritis"></tbody></table></div>
+  </div>
+
+  <!-- SEMUA DATA -->
+  <div class="page" id="pg-semua">
+    <div class="fr">
+      <input type="text" id="sq" placeholder="Cari paket / penyedia…" oninput="rSemua()">
+      <select id="fSumber" onchange="rSemua()"><option value="">Semua sumber</option><option>LKPD 2023</option><option>PDTT 2024</option><option>LKPD 2024</option><option>LKPD 2025</option></select>
+      <select id="fStatus" onchange="rSemua()"><option value="">Semua status</option><option>Belum Setor</option><option>Cicilan</option><option>Lunas</option></select>
+      <select id="fKelompok" onchange="rSemua()"><option value="">Semua kelompok</option><option value="A">Kelompok A</option><option value="B">Kelompok B</option><option value="C">Kelompok C</option><option value="L">Sudah Lunas</option></select>
+    </div>
+    <div class="tw"><table><thead><tr>
+      <th>#</th><th>Penyedia Jasa</th><th>Nama Paket</th><th>Sumber</th><th>PPK</th>
+      <th class="nr">Temuan (Rp)</th><th class="nr">Sudah Setor</th><th class="nr">Sisa (Rp)</th>
+      <th>%</th><th>Tahap</th><th>Status</th><th>Aksi</th>
+    </tr></thead><tbody id="tbl-semua"></tbody></table></div>
+    <div id="cnt-semua" style="font-size:11px;color:var(--tx3);margin-top:7px"></div>
+  </div>
+
+  <!-- BELUM SETOR -->
+  <div class="page" id="pg-belum">
+    <div id="al-belum"></div>
+    <div class="tw"><table><thead><tr>
+      <th>#</th><th>Penyedia Jasa</th><th>Nama Paket</th><th>Sumber</th>
+      <th class="nr">Total Temuan</th><th>SP Terakhir</th><th>Tgl SP</th>
+      <th>Hari Lewat</th><th>Rekomendasi</th><th>Aksi</th>
+    </tr></thead><tbody id="tbl-belum"></tbody></table></div>
+  </div>
+
+  <!-- CICILAN -->
+  <div class="page" id="pg-cicilan">
+    <div id="al-cicilan" style="margin-bottom:10px"></div>
+    <div class="tw"><table><thead><tr>
+      <th>#</th><th>Penyedia Jasa</th><th>Nama Paket</th>
+      <th class="nr">Total Temuan</th><th class="nr">Sudah Setor</th><th class="nr">Sisa</th>
+      <th>Progress</th><th>Cicilan Terakhir</th><th>Perjanjian</th><th>Aksi</th>
+    </tr></thead><tbody id="tbl-cicilan"></tbody></table></div>
+  </div>
+
+  <!-- LHP 2025 -->
+  <div class="page" id="pg-lhp25">
+    <div class="al amber" style="margin-bottom:12px">
+      <i class="ti ti-clock-exclamation"></i>
+      <span>LHP BPK TA 2025 diterima sekitar <strong>Juni 2026</strong>. SP1 wajib diterbitkan paling lambat <strong>7 hari</strong>. Batas penyelesaian <strong>60 hari</strong>.</span>
+    </div>
+    <div class="tw"><table><thead><tr>
+      <th>#</th><th>Penyedia Jasa</th><th>Nama Paket</th><th>Kategori</th>
+      <th class="nr">Temuan (Rp)</th><th>Status</th><th>SP1</th><th>Catatan</th><th>Aksi</th>
+    </tr></thead><tbody id="tbl-lhp25"></tbody></table></div>
+  </div>
+
+  <!-- SUDAH LUNAS -->
+  <div class="page" id="pg-lunas">
+    <div class="al blue" style="margin-bottom:12px">
+      <i class="ti ti-circle-check"></i>
+      <span>Penyedia yang telah <strong>menyelesaikan seluruh kewajiban</strong> pengembalian ke Kas Daerah.</span>
+    </div>
+    <div class="fr">
+      <input type="text" id="qlun" placeholder="Cari paket / penyedia…" oninput="rLunas()">
+      <select id="flunSb" onchange="rLunas()"><option value="">Semua sumber</option><option>LKPD 2023</option><option>PDTT 2024</option><option>LKPD 2024</option><option>LKPD 2025</option></select>
+    </div>
+    <div class="tw"><table><thead><tr>
+      <th>#</th><th>Penyedia Jasa</th><th>Nama Paket</th><th>Sumber</th><th>Jenis Temuan</th>
+      <th class="nr">Nilai Temuan (Rp)</th><th>Tgl Lunas</th><th>No. Bukti</th><th>Catatan</th><th>Aksi</th>
+    </tr></thead><tbody id="tbl-lunas"></tbody></table></div>
+    <div id="cnt-lunas" style="font-size:11px;color:var(--tx3);margin-top:7px"></div>
+  </div>
+
+  <!-- TAMBAH PAKET -->
+  <div class="page" id="pg-tambah" data-role="editor">
+    <div style="max-width:700px">
+      <div class="fsec">Informasi Paket</div>
+      <div class="fg2" style="margin-bottom:10px">
+        <div class="fgi full"><label>Nama Paket *</label><input id="tNm" type="text"></div>
+        <div class="fgi"><label>Penyedia Jasa *</label><input id="tPy" type="text"></div>
+        <div class="fgi"><label>No. Kontrak</label><input id="tNk" type="text"></div>
+        <div class="fgi"><label>Nilai Kontrak (Rp)</label><input id="tVk" type="number" placeholder="0"></div>
+        <div class="fgi"><label>PPK</label><input id="tPpk" type="text"></div>
+        <div class="fgi"><label>PPTK</label><input id="tPptk" type="text"></div>
+        <div class="fgi"><label>Sumber Temuan</label><select id="tSb"><option>LKPD 2023</option><option>PDTT 2024</option><option>LKPD 2024</option><option selected>LKPD 2025</option></select></div>
+        <div class="fgi"><label>Jenis Temuan</label><select id="tJn"><option>Kurang Volume</option><option>Tidak Sesuai Spesifikasi</option><option>Kurvol + Tidak Sesuai Spek</option><option>Denda Keterlambatan</option><option>Kelebihan Pembayaran</option></select></div>
+        <div class="fgi"><label>Kategori Belanja</label><select id="tKat"><option>Belanja Modal Jalan</option><option>Belanja Barang/Jasa</option><option>Belanja Modal Gedung</option></select></div>
+        <div class="fgi"><label>Tahun Anggaran</label><select id="tTA"><option>2023</option><option>2024</option><option selected>2025</option></select></div>
+      </div>
+      <div class="fsec">Temuan & Pembayaran</div>
+      <div class="fg2" style="margin-bottom:10px">
+        <div class="fgi"><label>Nilai Temuan (Rp) *</label><input id="tTm" type="number" placeholder="0"></div>
+        <div class="fgi"><label>Status</label><select id="tSt"><option>Belum Setor</option><option>Cicilan</option><option>Lunas</option></select></div>
+        <div class="fgi"><label>Perjanjian Angsuran</label><select id="tPj"><option value="0">Belum Ada</option><option value="1">Sudah Ada</option></select></div>
+        <div class="fgi"><label>Kelompok</label><select id="tKl"><option value="A">A — Belum Setor</option><option value="B">B — Cicilan</option><option value="C" selected>C — LHP 2025</option><option value="L">L — Sudah Lunas</option></select></div>
+      </div>
+      <div class="fsec">Surat Penagihan</div>
+      <div class="fg2" style="margin-bottom:10px">
+        <div class="fgi"><label>No. SP1</label><input id="tS1n" type="text"></div>
+        <div class="fgi"><label>Tgl SP1</label><input id="tS1t" type="date"></div>
+        <div class="fgi"><label>No. SP2</label><input id="tS2n" type="text"></div>
+        <div class="fgi"><label>Tgl SP2</label><input id="tS2t" type="date"></div>
+        <div class="fgi"><label>No. SP3</label><input id="tS3n" type="text"></div>
+        <div class="fgi"><label>Tgl SP3</label><input id="tS3t" type="date"></div>
+        <div class="fgi"><label>Tahap SP</label><select id="tTh"><option value="0">Belum SP</option><option value="1">SP1</option><option value="2">SP2</option><option value="3">SP3</option><option value="4">Eskalasi</option></select></div>
+      </div>
+      <div class="fsec">Pelunasan</div>
+      <div class="fg2" style="margin-bottom:10px">
+        <div class="fgi"><label>Tanggal Pelunasan</label><input id="tTgll" type="date"></div>
+        <div class="fgi"><label>No. Bukti Pelunasan</label><input id="tNol" type="text"></div>
+      </div>
+      <div class="fsec">Catatan Internal</div>
+      <div class="fgi" style="margin-bottom:14px"><textarea id="tCt" rows="3"></textarea></div>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-p" onclick="simpanBaru()"><i class="ti ti-check"></i>Simpan ke Firestore</button>
+        <button class="btn" onclick="resetForm()"><i class="ti ti-refresh"></i>Reset</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- IMPORT -->
+  <div class="page" id="pg-impor" data-role="editor">
+    <div style="max-width:560px">
+      <div class="fsec">Upload File Excel</div>
+      <div class="uz" id="uz" onclick="document.getElementById('fi').click()"
+        ondragover="event.preventDefault();this.classList.add('drag')"
+        ondragleave="this.classList.remove('drag')" ondrop="dropFile(event)">
+        <i class="ti ti-file-spreadsheet"></i>
+        <p>Klik atau seret file Excel ke sini</p>
+        <span>Format .xlsx — kolom sesuai template standar DPUPR</span>
+      </div>
+      <input type="file" id="fi" accept=".xlsx,.xls" style="display:none" onchange="importExcel(this)">
+      <div id="import-result" style="margin-top:10px"></div>
+      <div style="height:1px;background:var(--bd);margin:16px 0"></div>
+      <div class="fsec">Template Excel</div>
+      <button class="btn" onclick="dlTemplate()"><i class="ti ti-download"></i>Download Template</button>
+    </div>
+  </div>
+
+  <!-- KELOLA PENGGUNA -->
+  <div class="page" id="pg-users" data-role="admin">
+    <div class="sh"><h2>Daftar Pengguna</h2>
+      <button class="btn btn-sm" onclick="loadUsers()"><i class="ti ti-refresh"></i>Refresh</button>
+    </div>
+    <div class="al blue" style="margin-bottom:12px">
+      <i class="ti ti-info-circle"></i>
+      <span>Tambah user baru: Firebase Console → Authentication → Add User → lalu buat dokumen di Firestore <code>users/&#123;uid&#125;</code> dengan field <code>nama</code>, <code>email</code>, <code>role</code> (admin/editor/viewer), <code>createdAt</code>.</span>
+    </div>
+    <div class="tw"><table><thead><tr>
+      <th>#</th><th>Nama</th><th>Email</th><th>Role</th><th>Dibuat</th><th>Aksi</th>
+    </tr></thead><tbody id="tbl-users">
+      <tr><td colspan="6" style="text-align:center;padding:20px;color:var(--tx3)">Klik Refresh</td></tr>
+    </tbody></table></div>
+  </div>
+
+  <!-- LOG AKTIVITAS -->
+  <div class="page" id="pg-log" data-role="admin">
+    <div class="sh"><h2>Log Aktivitas</h2>
+      <button class="btn btn-sm" onclick="loadLog()"><i class="ti ti-refresh"></i>Refresh</button>
+    </div>
+    <div id="log-container" class="tw" style="background:var(--sur)">
+      <div style="padding:20px;text-align:center;color:var(--tx3);font-size:12px">Klik Refresh untuk memuat log</div>
+    </div>
+  </div>
+
+  <!-- SETUP AWAL -->
+  <div class="page" id="pg-setup" data-role="admin">
+    <div style="max-width:540px">
+      <div class="fsec">Inisialisasi Data ke Firestore</div>
+      <div class="al amber" style="margin-bottom:14px">
+        <i class="ti ti-alert-triangle"></i>
+        <span><strong>Hanya gunakan sekali</strong> saat pertama kali setup. Jika Firestore sudah berisi data, operasi ini dibatalkan otomatis.</span>
+      </div>
+      <p style="font-size:12px;color:var(--tx2);margin-bottom:14px">Akan memuat <strong>80 paket data</strong> ke Firestore Collection <code>paket</code>.</p>
+      <button class="btn btn-p" onclick="fsInitialLoad()"><i class="ti ti-database-import"></i>Muat 80 Paket Data Awal</button>
+    </div>
+  </div>
+
+</div><!-- /main -->
+</div><!-- /app -->
+</div><!-- /app-screen -->
+
+<!-- MODAL EDIT -->
+<div class="mo" id="mo-edit">
+  <div class="md">
+    <div class="mh"><h2 id="mo-edit-ttl">Edit Data Paket</h2><button class="mc" onclick="closeMo('mo-edit')">&#x2715;</button></div>
+    <div class="mb">
+      <div class="fsec">Informasi Paket</div>
+      <div class="fg2">
+        <div class="fgi full"><label>Nama Paket</label><input id="eNm" type="text"></div>
+        <div class="fgi"><label>Penyedia</label><input id="ePy" type="text"></div>
+        <div class="fgi"><label>No. Kontrak</label><input id="eNk" type="text"></div>
+        <div class="fgi"><label>Nilai Kontrak (Rp)</label><input id="eVk" type="number"></div>
+        <div class="fgi"><label>PPK</label><input id="ePpk" type="text"></div>
+        <div class="fgi"><label>PPTK</label><input id="ePptk" type="text"></div>
+        <div class="fgi"><label>Sumber Temuan</label><select id="eSb"><option>LKPD 2023</option><option>PDTT 2024</option><option>LKPD 2024</option><option>LKPD 2025</option></select></div>
+        <div class="fgi"><label>Jenis Temuan</label><select id="eJn"><option>Kurang Volume</option><option>Tidak Sesuai Spesifikasi</option><option>Kurvol + Tidak Sesuai Spek</option><option>Denda Keterlambatan</option><option>Kelebihan Pembayaran</option></select></div>
+        <div class="fgi"><label>Kategori Belanja</label><select id="eKat"><option>Belanja Modal Jalan</option><option>Belanja Barang/Jasa</option><option>Belanja Modal Gedung</option><option>Lainnya</option></select></div>
+        <div class="fgi"><label>Tahun Anggaran</label><select id="eTA"><option>2023</option><option>2024</option><option>2025</option></select></div>
+      </div>
+      <div class="fsec">Temuan & Pembayaran</div>
+      <div class="fg2">
+        <div class="fgi"><label>Nilai Temuan (Rp)</label><input id="eTm" type="number"></div>
+        <div class="fgi"><label>Status</label><select id="eSt"><option>Belum Setor</option><option>Cicilan</option><option>Lunas</option></select></div>
+        <div class="fgi"><label>Perjanjian Angsuran</label><select id="ePj"><option value="0">Belum Ada</option><option value="1">Sudah Ada</option></select></div>
+        <div class="fgi"><label>Kelompok</label><select id="eKl"><option value="A">A</option><option value="B">B</option><option value="C">C</option><option value="L">L — Lunas</option></select></div>
+      </div>
+      <div class="fsec">Histori Setoran</div>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:7px">
+        <span style="font-size:11px;color:var(--tx3)">Tanggal &nbsp; Jumlah &nbsp; No. Bukti</span>
+        <button class="btn btn-sm" onclick="addCi()"><i class="ti ti-plus"></i>Tambah</button>
+      </div>
+      <div id="ci-list"></div>
+      <div style="font-size:12px;margin-top:5px;padding-top:5px;border-top:1px solid var(--bd)">Total: <strong id="ciTot" style="color:var(--green)">Rp 0</strong></div>
+      <div class="fsec">Surat Penagihan</div>
+      <div class="fg2">
+        <div class="fgi"><label>No. SP1</label><input id="eS1n" type="text"></div>
+        <div class="fgi"><label>Tgl SP1</label><input id="eS1t" type="date"></div>
+        <div class="fgi"><label>No. SP2</label><input id="eS2n" type="text"></div>
+        <div class="fgi"><label>Tgl SP2</label><input id="eS2t" type="date"></div>
+        <div class="fgi"><label>No. SP3</label><input id="eS3n" type="text"></div>
+        <div class="fgi"><label>Tgl SP3</label><input id="eS3t" type="date"></div>
+        <div class="fgi"><label>Tahap SP</label><select id="eTh"><option value="0">Belum SP</option><option value="1">SP1</option><option value="2">SP2</option><option value="3">SP3</option><option value="4">Eskalasi</option></select></div>
+      </div>
+      <div class="fsec">Pelunasan</div>
+      <div class="fg2">
+        <div class="fgi"><label>Tanggal Pelunasan</label><input id="eTgll" type="date"></div>
+        <div class="fgi"><label>No. Bukti Pelunasan</label><input id="eNol" type="text"></div>
+      </div>
+      <div class="fsec">Catatan Internal</div>
+      <div class="fgi"><textarea id="eCt" rows="3"></textarea></div>
+    </div>
+    <div class="mf">
+      <button class="btn" onclick="closeMo('mo-edit')">Batal</button>
+      <button class="btn btn-p" onclick="saveEdit()"><i class="ti ti-check"></i>Simpan ke Firestore</button>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL HISTORI -->
+<div class="mo" id="mo-hist">
+  <div class="md" style="width:480px">
+    <div class="mh"><h2>Histori Setoran</h2><button class="mc" onclick="closeMo('mo-hist')">&#x2715;</button></div>
+    <div class="mb" id="mo-hb"></div>
+    <div class="mf"><button class="btn" onclick="closeMo('mo-hist')">Tutup</button></div>
+  </div>
+</div>
+
+<!-- MODAL HAPUS -->
+<div class="mo" id="mo-hapus">
+  <div class="md" style="width:420px">
+    <div class="mh"><h2>Konfirmasi Hapus</h2><button class="mc" onclick="closeMo('mo-hapus')">&#x2715;</button></div>
+    <div class="mb"><p style="font-size:13px;margin-bottom:8px">Yakin ingin menghapus data ini?</p>
+      <p id="hNm" style="font-size:12px;color:var(--tx2);font-weight:600"></p>
+      <p style="font-size:11px;color:var(--red);margin-top:8px">Tindakan ini tidak dapat dibatalkan.</p></div>
+    <div class="mf"><button class="btn" onclick="closeMo('mo-hapus')">Batal</button>
+      <button class="btn btn-d" onclick="doHapus()"><i class="ti ti-trash"></i>Hapus</button></div>
+  </div>
+</div>
+
+<!-- MODAL EDIT USER -->
+<div class="mo" id="mo-edituser">
+  <div class="md" style="width:440px">
+    <div class="mh"><h2>Edit Role Pengguna</h2><button class="mc" onclick="closeMo('mo-edituser')">&#x2715;</button></div>
+    <div class="mb">
+      <input type="hidden" id="eu-uid">
+      <div class="fg2">
+        <div class="fgi full"><label>Nama</label><input id="eu-nama" type="text"></div>
+        <div class="fgi full"><label>Role</label>
+          <select id="eu-role">
+            <option value="admin">Administrator — akses penuh + kelola user</option>
+            <option value="editor">Editor — edit & tambah data, tidak bisa hapus/kelola user</option>
+            <option value="viewer">Viewer — hanya lihat & download</option>
+          </select>
+        </div>
+      </div>
+      <div class="al amber" style="margin-top:12px">
+        <i class="ti ti-alert-triangle"></i>
+        <span>Perubahan role berlaku pada login berikutnya jika user sedang aktif.</span>
+      </div>
+    </div>
+    <div class="mf"><button class="btn" onclick="closeMo('mo-edituser')">Batal</button>
+      <button class="btn btn-p" onclick="saveUserRole()"><i class="ti ti-check"></i>Simpan Role</button></div>
+  </div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════
+// CORE APP — DATA, HELPERS, RENDERS
+// ═══════════════════════════════════════════════
+var DATA = [];
+var editId = -1, hapusId = -1, tempCi = [];
+var cSt = null, cSb = null, cT10 = null;
+
+var rp = function(v){ return 'Rp ' + Math.round(v||0).toLocaleString('id-ID'); };
+var rpM = function(v){ var jt=Math.round((v||0)/1000000); return jt>=1000?(jt/1000).toFixed(1)+' M':jt.toLocaleString('id-ID')+' jt'; };
+var pct = function(a,b){ return b>0?Math.min(100,Math.round((a/b)*100)):0; };
+var today = function(){ return new Date().toISOString().slice(0,10); };
+var daysDiff = function(d){ return d?Math.floor((Date.now()-new Date(d))/864e5):null; };
+var fmtD = function(d){ if(!d) return '—'; try{return new Date(d).toLocaleDateString('id-ID',{day:'2-digit',month:'short',year:'numeric'});}catch(e){return d;} };
+var getSetor = function(d){ return (d.ci||[]).reduce(function(s,c){return s+(+c.j||0);},0); };
+var getSisa = function(d){ return Math.max(0,(d.tm||0)-getSetor(d)); };
+
+function stBadge(s){ if(s==='Lunas') return '<span class="b b-green">Lunas</span>'; if(s==='Cicilan') return '<span class="b b-amber">Cicilan</span>'; return '<span class="b b-red">Belum Setor</span>'; }
+function thBadge(t){ var lb=['Belum SP','SP1','SP2','SP3','Eskalasi'],cl=['b-gray','b-blue','b-amber','b-red','b-red']; return '<span class="b '+(cl[t]||'b-gray')+'">'+(lb[t]||'?')+'</span>'; }
+function klBadge(k){ if(k==='A') return '<span class="b b-red">Kel.A</span>'; if(k==='B') return '<span class="b b-amber">Kel.B</span>'; if(k==='L') return '<span class="b b-green">Lunas</span>'; return '<span class="b b-blue">Kel.C</span>'; }
+function thDots(t){ var lb=['','SP1','SP2','SP3','TGR']; var h='<div class="td">'; for(var i=1;i<=4;i++){var cls=i<t?'done':i===t?'act':'pend';h+='<div class="dot '+cls+'" title="'+lb[i]+'">'+lb[i]+'</div>';if(i<4)h+='<div class="dotline"></div>';} return h+'</div>'; }
+function reko(d){ var sisa=getSisa(d),days=daysDiff(d.s1t); if(d.py&&d.py.includes('Sosro Karya')) return '<span style="color:var(--red);font-weight:700">Eskalasi TP-TGR</span>'; if(d.th===0) return '<span style="color:var(--red)">Kirim SP1 segera</span>'; if(days!==null&&days>60&&d.th<2) return '<span style="color:var(--red)">SP1 >60hr → SP2</span>'; if(days!==null&&days>30&&d.th===1) return '<span style="color:var(--amber)">Evaluasi SP1</span>'; if(d.st==='Cicilan'&&!d.pj) return '<span style="color:var(--amber)">Legalisasi perjanjian</span>'; if(sisa>0&&sisa<5000000) return 'Dorong pelunasan'; return 'Monitor berkala'; }
+
+function showLogin(){ document.getElementById('login-screen').style.display='flex'; document.getElementById('app-screen').style.display='none'; }
+function showApp(){ document.getElementById('login-screen').style.display='none'; document.getElementById('app-screen').style.display='block'; goPage('dashboard'); }
+function toast(msg,type){ var t=document.getElementById('toast'); t.textContent=msg; t.style.background=type==='err'?'#e02424':'#1c2030'; t.classList.add('show'); setTimeout(function(){t.classList.remove('show');},2800); }
+function closeMo(id){ document.getElementById(id).classList.remove('open'); }
+document.querySelectorAll('.mo').forEach(function(m){ m.addEventListener('click',function(e){ if(e.target===this) this.classList.remove('open'); }); });
+
+function canEdit(){ return window.currentRole==='admin'||window.currentRole==='editor'; }
+function canDelete(){ return window.currentRole==='admin'; }
+function editBtns(id){ if(!canEdit()) return ''; return '<button class="ib e" onclick="openEdit('+id+')" title="Edit"><i class="ti ti-edit"></i></button>'; }
+function delBtns(id){ if(!canDelete()) return ''; return '<button class="ib d" onclick="konfirmHapus('+id+')" title="Hapus"><i class="ti ti-trash"></i></button>'; }
+function histBtn(id){ return '<button class="ib" onclick="openHist('+id+')" title="Histori Setoran"><i class="ti ti-coins"></i></button>'; }
+
+function goPage(id){
+  document.querySelectorAll('.page').forEach(function(p){p.classList.remove('on');});
+  document.querySelectorAll('.ni').forEach(function(n){n.classList.remove('on');});
+  var pg=document.getElementById('pg-'+id);
+  if(!pg) return;
+  var roleReq=pg.getAttribute('data-role');
+  if(roleReq==='admin'&&window.currentRole!=='admin'){toast('Akses ditolak — hanya Administrator','err');return;}
+  if(roleReq==='editor'&&!canEdit()){toast('Akses ditolak — hanya Admin/Editor','err');return;}
+  pg.classList.add('on');
+  var nb=document.querySelector('.ni[data-page="'+id+'"]');
+  if(nb) nb.classList.add('on');
+  var titles={dashboard:'Dashboard',semua:'Semua Data',belum:'Belum Setor',cicilan:'Cicilan Berjalan',lhp25:'LHP TA 2025',lunas:'Data Sudah Lunas',tambah:'Tambah Paket Baru',impor:'Import Excel',users:'Kelola Pengguna',log:'Log Aktivitas',setup:'Setup Awal'};
+  var subs={dashboard:'Rekapitulasi temuan BPK RI — Bina Marga DPUPR Karanganyar',semua:'Seluruh paket pekerjaan yang memiliki temuan BPK',belum:'Penyedia yang belum melakukan setoran',cicilan:'Penyedia sedang dalam proses cicilan',lhp25:'Temuan LHP BPK TA 2025',lunas:'Penyedia yang telah menyelesaikan kewajiban',tambah:'Tambah data paket baru ke Firestore',impor:'Upload Excel untuk update massal',users:'Manajemen akun dan hak akses',log:'Riwayat aktivitas pengguna',setup:'Inisialisasi data ke Firestore'};
+  document.getElementById('pg-title').textContent=titles[id]||id;
+  document.getElementById('pg-sub').textContent=subs[id]||'';
+  var renders={dashboard:rDash,semua:rSemua,belum:rBelum,cicilan:rCicilan,lhp25:rLhp25,lunas:rLunas,users:loadUsers,log:loadLog};
+  if(renders[id]) renders[id]();
+}
+
+
+// ═══════════════════════════════════════════════
+// DEFAULT DATA
+// ═══════════════════════════════════════════════
+function loadDefault(){
+  DATA=[
+    {id:1,nm:'Penanganan Long Segment Jl. Bendungan–Banjarharjo',py:'CV. Central Karya',nk:'',vk:4142232000,ppk:'',pptk:'',sb:'LKPD 2023',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2023',tm:426683000,st:'Cicilan',pj:0,kl:'B',ci:[{t:'2024-06-26',j:60000000,b:''},{t:'2024-09-19',j:50000000,b:''},{t:'2024-10-20',j:40000000,b:''},{t:'2024-10-27',j:75000000,b:''}],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:1,ct:'Cicilan berjalan sejak Juni 2024. Perjanjian angsuran formal belum ada — segera legalisasi.',tgll:"",nol:""},
+    {id:2,nm:'Penanganan Long Segment Jl. Beji–Pojok, Kec. Tasikmadu',py:'CV. Kedaton',nk:'',vk:7234084000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurvol + Tidak Sesuai Spek',kat:'Belanja Modal Jalan',ta:'2024',tm:345615000,st:'Cicilan',pj:0,kl:'B',ci:[{t:'2025-12-30',j:18115000,b:''}],s1n:'900/94.6.1/V/2026',s1t:'2026-05-13',s2n:'',s2t:'',s3n:'',s3t:'',th:1,ct:'Baru 5% lunas. Perjanjian angsuran belum ada.',tgll:"",nol:""},
+    {id:3,nm:'Long Segment Jl. Klodran–Sawahan, Kec. Colomadu',py:'CV. Yogya Resita',nk:'',vk:2041296000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2024',tm:10296000,st:'Belum Setor',pj:0,kl:'A',ci:[],s1n:'900/84.6.66/V/2026',s1t:'2026-05-13',s2n:'',s2t:'',s3n:'',s3t:'',th:1,ct:'Surat pemberitahuan 13 Mei 2026.',tgll:"",nol:""},
+    {id:4,nm:'Long Segment Jl. Jambangan–Pendem, Kec. Mojogedang',py:'CV. Karya Agung',nk:'',vk:10714124000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurvol + Tidak Sesuai Spek',kat:'Belanja Modal Jalan',ta:'2024',tm:309429000,st:'Cicilan',pj:0,kl:'B',ci:[{t:'2025-05-28',j:25000000,b:''},{t:'2025-07-28',j:50000000,b:''},{t:'2026-01-06',j:50000000,b:''}],s1n:'900/84.6.9/V/2026',s1t:'2026-05-13',s2n:'',s2t:'',s3n:'',s3t:'',th:1,ct:'3 kali cicilan. Sisa masih Rp 184 juta.',tgll:"",nol:""},
+    {id:5,nm:'Pemeliharaan Jalan Beningsari–Munggur',py:'CV. Central Karya',nk:'',vk:188297000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2024',tm:5188000,st:'Belum Setor',pj:0,kl:'A',ci:[],s1n:'900/94.6.1/V/2026',s1t:'2026-05-13',s2n:'',s2t:'',s3n:'',s3t:'',th:1,ct:'Surat pemberitahuan 13 Mei 2026.',tgll:"",nol:""},
+    {id:6,nm:'Pemeliharaan Jalan Ronggo Warsito, Kec. Karanganyar',py:'CV. Ganefo',nk:'',vk:188670000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2024',tm:12113000,st:'Belum Setor',pj:0,kl:'A',ci:[],s1n:'900/84.6.8/V/2026',s1t:'2026-05-13',s2n:'',s2t:'',s3n:'',s3t:'',th:1,ct:'Juga memiliki tunggakan denda LKPD 2023.',tgll:"",nol:""},
+    {id:7,nm:'Pengaspalan Jalan Dukuh Rt.01/Rw.05–Pandananom',py:'CV. Sami Asih',nk:'',vk:142556000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2024',tm:8761000,st:'Cicilan',pj:0,kl:'B',ci:[{t:'2025-08-21',j:2700000,b:''},{t:'2026-01-07',j:2500000,b:''}],s1n:'900/84.6.6/V/2026',s1t:'2026-05-13',s2n:'',s2t:'',s3n:'',s3t:'',th:1,ct:'Hampir lunas. Dorong pelunasan sekaligus.',tgll:"",nol:""},
+    {id:8,nm:'Pembangunan Talud Jalan Matesih–Tegalgede',py:'CV. Sosro Karya',nk:'',vk:1886851000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2024',tm:45835000,st:'Belum Setor',pj:0,kl:'A',ci:[],s1n:'900/84.6.13/V/2026',s1t:'2026-05-13',s2n:'',s2t:'',s3n:'',s3t:'',th:1,ct:'TIDAK KOOPERATIF. Tidak ada kontrak aktif 2 tahun terakhir. Pertimbangkan eskalasi cepat ke TP-TGR.',tgll:"",nol:""},
+    {id:9,nm:'Long Segment Jl. Dayu–Pandananom, Kec. Ngargoyoso',py:'CV. Mustika Bukit Jajar',nk:'',vk:1868023000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurvol + Tidak Sesuai Spek',kat:'Belanja Modal Jalan',ta:'2024',tm:79418000,st:'Cicilan',pj:0,kl:'B',ci:[{t:'2025-12-30',j:11918000,b:''}],s1n:'900/84.6.5/V/2026',s1t:'2026-05-13',s2n:'',s2t:'',s3n:'',s3t:'',th:1,ct:'Baru 15%. Perjanjian angsuran formal belum ada.',tgll:"",nol:""},
+    {id:10,nm:'Rekonstruksi Jl. Ngringo–Perumnas Palur (Kurvol+Denda)',py:'CV. Sosro Karya',nk:'',vk:0,ppk:'',pptk:'',sb:'LKPD 2024',jn:'Kelebihan Pembayaran',kat:'Belanja Modal Jalan',ta:'2024',tm:183805000,st:'Belum Setor',pj:0,kl:'A',ci:[],s1n:'900/84.6.4/V/2026',s1t:'2026-05-13',s2n:'',s2t:'',s3n:'',s3t:'',th:1,ct:'Tidak kooperatif. Total kewajiban CV Sosro Karya = Rp 229,64 juta.',tgll:"",nol:""},
+    {id:11,nm:'Rekonstruksi Jalan Kadipekso–Jenawi (Denda)',py:'CV. Jack Kindo',nk:'',vk:4632963000,ppk:'',pptk:'',sb:'LKPD 2023',jn:'Denda Keterlambatan',kat:'Belanja Modal Jalan',ta:'2023',tm:20869000,st:'Belum Setor',pj:0,kl:'A',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Belum ada respons sejak temuan.',tgll:"",nol:""},
+    {id:12,nm:'Pelebaran Jalan Trengguli–Lempong (Denda)',py:'CV. Ganefo',nk:'',vk:0,ppk:'',pptk:'',sb:'LKPD 2023',jn:'Denda Keterlambatan',kat:'Belanja Modal Jalan',ta:'2023',tm:34639000,st:'Belum Setor',pj:0,kl:'A',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Belum ada respons. Terpisah dari temuan PDTT 2024.',tgll:"",nol:""},
+    {id:13,nm:'Pelebaran Jalan Karan–Bumi Perkemahan (Denda)',py:'CV. Anugerah Sankara Rizki',nk:'',vk:0,ppk:'',pptk:'',sb:'LKPD 2023',jn:'Denda Keterlambatan',kat:'Belanja Modal Jalan',ta:'2023',tm:482127000,st:'Cicilan',pj:0,kl:'B',ci:[{t:'2025-10-31',j:40000000,b:''},{t:'2025-12-22',j:96425000,b:''}],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:1,ct:'Sisa denda terbesar. Perjanjian angsuran belum ada.',tgll:"",nol:""},
+    {id:14,nm:'Rehabilitasi Jalan Karangpandan–Blora (Ruas 89)',py:'CV. Redjo Pawiro',nk:'05.9/MK/PPK.1/XI/2025',vk:4351337879,ppk:'',pptk:'',sb:'LKPD 2025',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2025',tm:192082000,st:'Belum Setor',pj:0,kl:'C',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Kooperatif — paket lain sudah lunas. Komunikasi informal sudah dilakukan.',tgll:"",nol:""},
+    {id:15,nm:'Rehabilitasi Jalan Karanganyar–Ngadiluwih (Ruas 27)',py:'CV. Anugrah Lima Utama',nk:'SP/PAKET-5.2.PPK/III/2025',vk:3685625000,ppk:'',pptk:'',sb:'LKPD 2025',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2025',tm:67464000,st:'Belum Setor',pj:0,kl:'C',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'',tgll:"",nol:""},
+    {id:16,nm:'Rekonstruksi Jalan Palur–Dalon (Ruas 41)',py:'CV. Anugrah Lima Utama',nk:'04.9/MK/PPK.1/X/2025',vk:4718188138,ppk:'',pptk:'',sb:'LKPD 2025',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2025',tm:148129000,st:'Belum Setor',pj:0,kl:'C',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'',tgll:"",nol:""},
+    {id:17,nm:'Rekonstruksi Jalan Ngangkruk–Jeruksawit (Ruas 24)',py:'PT. Panca Darma Puspa Wira',nk:'02.9/MK/PPK.1/X/2025',vk:14498861493,ppk:'',pptk:'',sb:'LKPD 2025',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2025',tm:32267000,st:'Belum Setor',pj:0,kl:'C',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'',tgll:"",nol:""},
+    {id:18,nm:'Rekonstruksi Jalan Kebakkramat–Dalon (Ruas 44)',py:'CV. Jaya Sempurna Abadi',nk:'03.9/MK/PPK.1/X/2025',vk:9000581657,ppk:'',pptk:'',sb:'LKPD 2025',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2025',tm:266485000,st:'Belum Setor',pj:0,kl:'C',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'NILAI TERBESAR LHP 2025 — prioritas utama.',tgll:"",nol:""},
+    {id:19,nm:'Rehabilitasi Jalan Dalon–Ngrancang (Ruas 37)',py:'CV. Perisai Bangsa',nk:'01.6/MK/PPK.5/X/2025',vk:734826285,ppk:'',pptk:'',sb:'LKPD 2025',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2025',tm:3469000,st:'Belum Setor',pj:0,kl:'C',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'',tgll:"",nol:""},
+    {id:20,nm:'Rehabilitasi Jalan Ngadiluwih–Matesih (Ruas 142)',py:'CV. Putra Kalingga',nk:'SP/Kons.Ngad-Mtsh.2.PPK/V/2025',vk:4179255000,ppk:'',pptk:'',sb:'LKPD 2025',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2025',tm:77099000,st:'Belum Setor',pj:0,kl:'C',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'3 paket sekaligus (Ruas 142+Jumapolo+Ruas 157), total Rp 260 juta.',tgll:"",nol:""},
+    {id:21,nm:'Peningkatan Jalan Jumapolo–Jumantono',py:'CV. Putra Kalingga',nk:'EP-01K2KZHBA1P3WQM9K2Y4H7HHCD',vk:5501983000,ppk:'',pptk:'',sb:'LKPD 2025',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2025',tm:72981000,st:'Belum Setor',pj:0,kl:'C',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'',tgll:"",nol:""},
+    {id:22,nm:'Pelebaran Jalan Tlobosempon–Matesih (Ruas 157)',py:'CV. Putra Kalingga',nk:'02.7/MK/PPK.4/XI/2025',vk:5315184828,ppk:'',pptk:'',sb:'LKPD 2025',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2025',tm:110016000,st:'Belum Setor',pj:0,kl:'C',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'',tgll:"",nol:""},
+    {id:23,nm:'Rehabilitasi Jalan Ombang-ombang–Blumbang & Kalisoro Kemantren (Ruas 128)',py:'CV. Putra Cakra Bersaudara',nk:'01.6/MK/PPK.4/X/2025',vk:5825184789,ppk:'',pptk:'',sb:'LKPD 2025',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2025',tm:112443000,st:'Belum Setor',pj:0,kl:'C',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'',tgll:"",nol:""},
+    {id:24,nm:'Rehabilitasi Jalan Kerjo–Seloromo (Ruas 100)',py:'CV. Sigra Teknik',nk:'EP.01K3FQ6Z0WNP7A166PBQKS70RD',vk:3714898000,ppk:'',pptk:'',sb:'LKPD 2025',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2025',tm:181638000,st:'Belum Setor',pj:0,kl:'C',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Pembayaran kontrak baru 90%.',tgll:"",nol:""},
+    {id:25,nm:'Rekonstruksi Jalan Sudimoro–Ngargoyoso (Ruas 114)',py:'PT. Triyagan Harmet Perkasa',nk:'06.9/MK/PPK.1/XI/2025',vk:14753711493,ppk:'',pptk:'',sb:'LKPD 2025',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2025',tm:200115000,st:'Belum Setor',pj:0,kl:'C',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Pembayaran kontrak baru 90%.',tgll:"",nol:""},
+    {id:26,nm:'Pemeliharaan Rutin Jalan Lawu – Paket 16 (Barjas)',py:'CV. Mitra Karya Lima',nk:'03.9/MK/PPK.5/X/2025',vk:1809977174,ppk:'',pptk:'',sb:'LKPD 2025',jn:'Kelebihan Pembayaran',kat:'Belanja Barang/Jasa',ta:'2025',tm:28326000,st:'Belum Setor',pj:0,kl:'C',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'',tgll:"",nol:""},
+    {id:27,nm:'Peningkatan Jalan Menuju SMP Bhayangkara',py:'CV. Karya Utama',nk:'',vk:883458000,ppk:'',pptk:'',sb:'LKPD 2025',jn:'Kurang Volume',kat:'Belanja Barang/Jasa',ta:'2025',tm:35768000,st:'Belum Setor',pj:0,kl:'C',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'',tgll:"",nol:""},
+    {id:28,nm:'Rehabilitasi Jalan Gempol–Suruh Kalang',py:'CV. Karya Utama',nk:'',vk:615184000,ppk:'',pptk:'',sb:'LKPD 2025',jn:'Kurang Volume',kat:'Belanja Barang/Jasa',ta:'2025',tm:3323000,st:'Belum Setor',pj:0,kl:'C',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'',tgll:"",nol:""},
+    {id:29,nm:'Rehabilitasi Jalan RW 14 Banaran Jantiharjo',py:'CV. Bumi Anugerah Putra',nk:'',vk:198432000,ppk:'',pptk:'',sb:'LKPD 2025',jn:'Kurang Volume',kat:'Belanja Barang/Jasa',ta:'2025',tm:8138000,st:'Belum Setor',pj:0,kl:'C',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'',tgll:"",nol:""},
+    {id:30,nm:'Rehabilitasi Jalan Tunggul Kalang–Dukuhrejo',py:'CV. Perwita Utami',nk:'',vk:198095000,ppk:'',pptk:'',sb:'LKPD 2025',jn:'Kurang Volume',kat:'Belanja Barang/Jasa',ta:'2025',tm:20784000,st:'Belum Setor',pj:0,kl:'C',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'',tgll:"",nol:""},
+    {id:31,nm:'Pemeliharaan Rutin Jalan Dr. Soeharso – Paket 17 (Barjas)',py:'CV. Perisai Bangsa',nk:'SPK.5/PML.10.2.BM/XI/2025',vk:398480000,ppk:'',pptk:'',sb:'LKPD 2025',jn:'Kurang Volume',kat:'Belanja Barang/Jasa',ta:'2025',tm:38362000,st:'Belum Setor',pj:0,kl:'C',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'',tgll:"",nol:""}
+  ,
+    {id:32,nm:'Long Segment Ruas Jalan Kayuapak–Ngaliyan, Kec. Karanganyar',py:'CV. Legra Sejahtera',nk:'',vk:5784818000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurvol + Tidak Sesuai Spek',kat:'Belanja Modal Jalan',ta:'2024',tm:150472000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas 31/12/2025',tgll:'2025-12-31',nol:''},
+    {id:33,nm:'Long Segment Ruas Jalan Jumantono–Matesih, Kec. Jumantono',py:'CV. Putra Kalingga',nk:'',vk:4292911000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurvol + Tidak Sesuai Spek',kat:'Belanja Modal Jalan',ta:'2024',tm:159826000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas 01/09/2025',tgll:'2025-09-01',nol:''},
+    {id:34,nm:'Pemeliharaan Berkala Jalan Tentara Pelajar, Wahidin Sudiro Husodo, Gatot Subroto',py:'CV. Sigra Tehnik',nk:'',vk:7138033000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurvol + Tidak Sesuai Spek',kat:'Belanja Modal Jalan',ta:'2024',tm:296406000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas 31/12/2025',tgll:'2025-12-31',nol:''},
+    {id:35,nm:'Long Segment Ruas Jalan Jenawi–Seloromo, Kec. Jenawi',py:'CV. Putra Kalingga',nk:'',vk:7443331000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurvol + Tidak Sesuai Spek',kat:'Belanja Modal Jalan',ta:'2024',tm:78973000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas 30/06/2025',tgll:'2025-06-30',nol:''},
+    {id:36,nm:'Long Segment Ruas Jalan Ocak-acik–Jati, Kec. Jaten',py:'CV. Setia Budi',nk:'',vk:2496678000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurvol + Tidak Sesuai Spek',kat:'Belanja Modal Jalan',ta:'2024',tm:47259000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas 17/10/2025',tgll:'2025-10-17',nol:''},
+    {id:37,nm:'Pemeliharaan Jalan Paket 6 Baturan–Sumber',py:'CV. Satria Utama',nk:'',vk:196904000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2024',tm:3578000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas 17/12/2024',tgll:'2024-12-17',nol:''},
+    {id:38,nm:'Pemeliharaan Jalan Paket 5 Ngiri–Truneng',py:'CV. Redjo Pawiro',nk:'',vk:192886000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2024',tm:14849000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas 26/11/2025',tgll:'2025-11-26',nol:''},
+    {id:39,nm:'Long Segment Ruas Jalan Ngasem–Colomadu, Kec. Colomadu',py:'CV. Putra Kalingga',nk:'',vk:8242115000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurvol + Tidak Sesuai Spek',kat:'Belanja Modal Jalan',ta:'2024',tm:200011000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas 01/09/2025',tgll:'2025-09-01',nol:''},
+    {id:40,nm:'Long Segment Ruas Jalan Matesih–Tawangmangu',py:'CV. Sigra Tehnik',nk:'',vk:5925890000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2024',tm:17130000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas 31/12/2025',tgll:'2025-12-31',nol:''},
+    {id:41,nm:'Pemeliharaan Jalan MGR Sugiyo Pranoto',py:'CV. Legra Sejahtera',nk:'',vk:188985000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurvol + Tidak Sesuai Spek',kat:'Belanja Modal Jalan',ta:'2024',tm:6282000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas Tah.I 17/12/2024, Tah.II 31/12/2025',tgll:'2025-12-31',nol:''},
+    {id:42,nm:'Pemeliharaan Jalan Bangsri–Plosorejo',py:'CV. Legra Sejahtera',nk:'',vk:185981000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurvol + Tidak Sesuai Spek',kat:'Belanja Modal Jalan',ta:'2024',tm:27255000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas 31/12/2025',tgll:'2025-12-31',nol:''},
+    {id:43,nm:'Pengaspalan Jalan Lingkungan Jetis RT.04/RW.03, Kel. Karanganyar',py:'CV. Maju Lancar Berkah',nk:'',vk:94376000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2024',tm:4171000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas 17/01/2025',tgll:'2025-01-17',nol:''},
+    {id:44,nm:'Pemeliharaan Jalan Mayjend Yudomo SHD',py:'CV. Azza',nk:'',vk:187763000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2024',tm:7379000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas 09/09/2025',tgll:'2025-09-09',nol:''},
+    {id:45,nm:'Peningkatan Jalan Botok–Sumberrejo',py:'CV. Tunjung Jaya',nk:'',vk:182126000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2024',tm:8124000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas 06/09/2025',tgll:'2025-09-06',nol:''},
+    {id:46,nm:'Pemeliharaan Jalan Paket 9 Jalan Blorong–Kakum',py:'CV. Redjo Pawiro',nk:'',vk:193884000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2024',tm:2556000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas 26/11/2025',tgll:'2025-11-26',nol:''},
+    {id:47,nm:'Peningkatan Jalan Dayu–Kedungulo',py:'CV. Duta Kalingga',nk:'',vk:2466041000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurvol + Tidak Sesuai Spek',kat:'Belanja Modal Jalan',ta:'2024',tm:45054000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas 31/12/2025',tgll:'2025-12-31',nol:''},
+    {id:48,nm:'Long Segment Ruas Jalan Karangsari–Pringombo, Kec. Jatiyoso',py:'CV. Anugerah Lima Utama',nk:'',vk:4631550000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurvol + Tidak Sesuai Spek',kat:'Belanja Modal Jalan',ta:'2024',tm:108651000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas 31/12/2024',tgll:'2024-12-31',nol:''},
+    {id:49,nm:'Long Segment Ruas Jalan Kranggan–Tangkilan, Kec. Tasikmadu',py:'CV. Cipta Graha',nk:'',vk:4137742000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurvol + Tidak Sesuai Spek',kat:'Belanja Modal Jalan',ta:'2024',tm:83095000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas 23/12/2024',tgll:'2024-12-23',nol:''},
+    {id:50,nm:'Long Segment Ruas Jalan Kutho–Ngargoyoso',py:'CV. Central Karya',nk:'',vk:6524735000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurvol + Tidak Sesuai Spek',kat:'Belanja Modal Jalan',ta:'2024',tm:391751000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas 31/12/2024',tgll:'2024-12-31',nol:''},
+    {id:51,nm:'Long Segment Ruas Jalan Jumantoro–Gudang Lawas, Kec. Jumapolo',py:'CV. Anugerah Lima Utama',nk:'',vk:3053263000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurvol + Tidak Sesuai Spek',kat:'Belanja Modal Jalan',ta:'2024',tm:58305000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas 31/12/2024',tgll:'2024-12-31',nol:''},
+    {id:52,nm:'Long Segment Ruas Jalan Domas–Jatikurung, Kec. Mojogedang',py:'CV. Karya Manunggal Berkah',nk:'',vk:1795156000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurvol + Tidak Sesuai Spek',kat:'Belanja Modal Jalan',ta:'2024',tm:91764000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas 31/12/2024',tgll:'2024-12-31',nol:''},
+    {id:53,nm:'Long Segment Ruas Jalan Colomadu–Kalipati, Kec. Colomadu',py:'CV. Jasem Makmur Abadi',nk:'',vk:2993307000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurvol + Tidak Sesuai Spek',kat:'Belanja Modal Jalan',ta:'2024',tm:181021000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas 30/12/2024',tgll:'2024-12-30',nol:''},
+    {id:54,nm:'Long Segment Ruas Jalan Gaum–Gedong, Kec. Tasikmadu',py:'CV. Bangun Makmur',nk:'',vk:5777844000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurvol + Tidak Sesuai Spek',kat:'Belanja Modal Jalan',ta:'2024',tm:205794000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas 31/12/2024',tgll:'2024-12-31',nol:''},
+    {id:55,nm:'Long Segment Ruas Jalan Tugu–Kebak, Kec. Jumantono',py:'CV. Anugerah Lima Utama',nk:'',vk:4369883000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2024',tm:3760000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas 31/12/2024',tgll:'2024-12-31',nol:''},
+    {id:56,nm:'Long Segment Ruas Jalan Pandananom–Dukuh, Kec. Ngargoyoso',py:'CV. Legra Sejahtera',nk:'',vk:3081765000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurvol + Tidak Sesuai Spek',kat:'Belanja Modal Jalan',ta:'2024',tm:53005000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas 06/12/2024',tgll:'2024-12-06',nol:''},
+    {id:57,nm:'Long Segment Ruas Jalan Garut–Jatiharjo, Kec. Jatipuro',py:'CV. Anugerah Lima Utama',nk:'',vk:3029844000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurvol + Tidak Sesuai Spek',kat:'Belanja Modal Jalan',ta:'2024',tm:32040000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas 31/12/2024',tgll:'2024-12-31',nol:''},
+    {id:58,nm:'Long Segment No. Ruas 126 Jalan Wonorejo–Plesungan',py:'CV. Karya Utama',nk:'',vk:7512513000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurvol + Tidak Sesuai Spek',kat:'Belanja Modal Jalan',ta:'2024',tm:144480000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas 13/12/2024',tgll:'2024-12-13',nol:''},
+    {id:59,nm:'Pengaspalan Jalan Jalan Dahlia dan Jalan Mawar, Dimoro, Kel. Karanganyar',py:'CV. Maju Lancar Berkah',nk:'',vk:188625000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2024',tm:1148000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas 17/01/2025',tgll:'2025-01-17',nol:''},
+    {id:60,nm:'Long Segment Ruas Jalan Karang–Berjo, Kec. Karangpandan',py:'CV. Jasem Makmur Abadi',nk:'',vk:4794122000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurvol + Tidak Sesuai Spek',kat:'Belanja Modal Jalan',ta:'2024',tm:117771000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas 30/12/2024',tgll:'2024-12-30',nol:''},
+    {id:61,nm:'Ruas Jalan Tohudan–Gedongan, Kec. Colomadu (Denda)',py:'CV. Tunjung Jaya',nk:'',vk:2312508108,ppk:'',pptk:'',sb:'LKPD 2024',jn:'Denda Keterlambatan',kat:'Belanja Modal Jalan',ta:'2024',tm:6938000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas Tah.I 28/12/2024, Tah.II 31/12/2024',tgll:'2024-12-31',nol:''},
+    {id:62,nm:'Rehabilitasi Jalan Matesih–Karangpandan Ruas 143 (Kurvol+Denda)',py:'PT. Triyagan Harmet Perkasa',nk:'',vk:0,ppk:'',pptk:'',sb:'LKPD 2024',jn:'Kelebihan Pembayaran',kat:'Belanja Modal Jalan',ta:'2024',tm:200504000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas 31/12/2025',tgll:'2025-12-31',nol:''},
+    {id:63,nm:'Pembangunan Jembatan Ngrancang Ruas Dalon–Ngrancang (Denda)',py:'CV. Setia Budi',nk:'',vk:0,ppk:'',pptk:'',sb:'LKPD 2024',jn:'Denda Keterlambatan',kat:'Belanja Modal Jalan',ta:'2024',tm:321527000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas Tah.I 17/10/2025, Tah.II 30/12/2025',tgll:'2025-12-30',nol:''},
+    {id:64,nm:'Long Segment Ruas Jalan Plesungan–Kragan',py:'CV. Wahyu Adi',nk:'',vk:5106666000,ppk:'',pptk:'',sb:'LKPD 2023',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2023',tm:271743000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas Tah.I 26/06/2024, Tah.II 19/09/2024, Tah.III 31/12/2025',tgll:'2025-12-31',nol:''},
+    {id:65,nm:'Pelebaran Jalan Macanan–Pulosari',py:'CV. Legra Sejahtera',nk:'',vk:2603598000,ppk:'',pptk:'',sb:'LKPD 2023',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2023',tm:113073000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas Tah.I 26/06/2024, Tah.II 31/12/2025',tgll:'2025-12-31',nol:''},
+    {id:66,nm:'Long Segment Ruas Jalan Malanggaten–Buntar',py:'CV. Wahyu Adi',nk:'',vk:4980961000,ppk:'',pptk:'',sb:'LKPD 2023',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2023',tm:544967000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas 5 tahap cicilan, selesai 31/12/2025',tgll:'2025-12-31',nol:''},
+    {id:67,nm:'Long Segment Ruas Jalan Pendem–Ngargoyoso',py:'CV. Legra Sejahtera',nk:'',vk:5553201000,ppk:'',pptk:'',sb:'LKPD 2023',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2023',tm:80599000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas Tah.I 26/06/2024, Tah.II 31/12/2025',tgll:'2025-12-31',nol:''},
+    {id:68,nm:'Long Segment Ruas Jalan Ngargoyoso–Jenawi',py:'CV. Perisai Bangsa',nk:'',vk:1676374000,ppk:'',pptk:'',sb:'LKPD 2023',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2023',tm:63161000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas Tah.I 26/06/2024, Tah.II 12/08/2025, Tah.III 31/12/2025',tgll:'2025-12-31',nol:''},
+    {id:69,nm:'Long Segment Ruas Jalan Puntukrejo–Ngranten',py:'CV. Jasem Makmur Abadi',nk:'',vk:2842151000,ppk:'',pptk:'',sb:'LKPD 2023',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2023',tm:8211000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas sekaligus 08/05/2024',tgll:'2024-05-08',nol:''},
+    {id:70,nm:'Rekonstruksi Jalan Beji–Pojok',py:'CV. Tunjung Jaya',nk:'',vk:2461235000,ppk:'',pptk:'',sb:'LKPD 2023',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2023',tm:6514000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas sekaligus 14/05/2024',tgll:'2024-05-14',nol:''},
+    {id:71,nm:'Pembangunan Jembatan Nglurah, Kec. Tawangmangu (Denda)',py:'CV. Gempoer Jagating Bahurekso',nk:'',vk:1392979279,ppk:'',pptk:'',sb:'LKPD 2023',jn:'Denda Keterlambatan',kat:'Belanja Modal Jalan',ta:'2023',tm:20895000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas Tah.I 29/12/2023, Tah.II 31/12/2024',tgll:'2024-12-31',nol:''},
+    {id:72,nm:'Peningkatan Jalan Kerjo–Gempolan No. Ruas 103 (Denda)',py:'CV. Gempoer Jagating Bahurekso',nk:'',vk:2172390991,ppk:'',pptk:'',sb:'LKPD 2023',jn:'Denda Keterlambatan',kat:'Belanja Modal Jalan',ta:'2023',tm:28242000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas Tah.I 29/12/2023, Tah.II 31/12/2024',tgll:'2024-12-31',nol:''},
+    {id:73,nm:'Rehabilitasi Jalan Ombang-ombang–Blumbang & Kalisoro Kemantren Ruas 128 (Denda)',py:'CV. Putra Cakra Bersaudara',nk:'01.6/MK/PPK.4/X/2025',vk:5851408403,ppk:'',pptk:'',sb:'LKPD 2025',jn:'Denda Keterlambatan',kat:'Belanja Modal Jalan',ta:'2025',tm:31630000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas — 6 hari keterlambatan',tgll:'',nol:''},
+    {id:74,nm:'Rehabilitasi Jalan Kerjo–Seloromo Ruas 100 (Denda)',py:'CV. Sigra Teknik',nk:'EP.01K3FQ6Z0WNP7A166PBQKS70RD',vk:3714898000,ppk:'',pptk:'',sb:'LKPD 2025',jn:'Denda Keterlambatan',kat:'Belanja Modal Jalan',ta:'2025',tm:13388000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas — 4 hari keterlambatan',tgll:'',nol:''},
+    {id:75,nm:'Peningkatan Jalan Menuju Kebon 9-11 Cetho Gumeng Kec. Jenawi (Denda)',py:'CV. Harapan Karya Perkasa',nk:'SPK.6/PLP.4.2.BM/X/2025',vk:392869000,ppk:'',pptk:'',sb:'LKPD 2025',jn:'Denda Keterlambatan',kat:'Belanja Barang/Jasa',ta:'2025',tm:4248000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas — 12 hari keterlambatan',tgll:'',nol:''},
+    {id:76,nm:'Paket 15 Pemeliharaan Rutin Jalan Wilayah Selatan Karanganyar (Denda)',py:'CV. Wahyu Adi',nk:'SPK.5/PML.14.2.BM/XI/2025',vk:398535000,ppk:'',pptk:'',sb:'LKPD 2025',jn:'Denda Keterlambatan',kat:'Belanja Barang/Jasa',ta:'2025',tm:2514000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas — 7 hari keterlambatan',tgll:'',nol:''},
+    {id:77,nm:'Paket 17 Pemeliharaan Rutin Jalan Soeharso (Denda)',py:'CV. Perisai Bangsa',nk:'SPK.5/PML.10.2.BM/XI/2025',vk:398480000,ppk:'',pptk:'',sb:'LKPD 2025',jn:'Denda Keterlambatan',kat:'Belanja Barang/Jasa',ta:'2025',tm:2154000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas — 6 hari keterlambatan',tgll:'',nol:''},
+    {id:78,nm:'Paket 24 Pemeliharaan Rutin Jalan Matesih–Tawangmangu, Pringgosari, dll (Denda)',py:'CV. Azza',nk:'SPK.5/PML.8.2.BM/XI/2025',vk:298432000,ppk:'',pptk:'',sb:'LKPD 2025',jn:'Denda Keterlambatan',kat:'Belanja Barang/Jasa',ta:'2025',tm:3227000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas — 12 hari keterlambatan',tgll:'',nol:''},
+    {id:79,nm:'Renovasi Rumah Dinas Wakil Bupati',py:'CV. Redjo Pawiro',nk:'600.1.15/15.15.1/PPK.1/III/2025',vk:1531920200,ppk:'',pptk:'',sb:'LKPD 2025',jn:'Kelebihan Pembayaran',kat:'Belanja Modal Gedung',ta:'2025',tm:17951000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas sebelum LHP diterima — paket Gedung DPUPR',tgll:'',nol:''},
+    {id:80,nm:'Pembangunan Puskesmas Jaten 1',py:'CV. Berlin Isvara Konstruksindo',nk:'600.1.15/33.15/PPK.1/X/2025',vk:1719613000,ppk:'',pptk:'',sb:'LKPD 2025',jn:'Kelebihan Pembayaran',kat:'Belanja Modal Gedung',ta:'2025',tm:45420000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas sebelum LHP diterima — paket Gedung DPUPR',tgll:'',nol:''}
+  ];
+  save();
+}
+
+// ── HELPERS ──
+
+// ═══════════════════════════════════════════════
+// RENDER FUNCTIONS
+// ═══════════════════════════════════════════════
+function rDash(){
+  const tot=DATA.reduce((s,d)=>s+d.tm,0);
+  const setor=DATA.reduce((s,d)=>s+getSetor(d),0);
+  const sisa=DATA.reduce((s,d)=>s+getSisa(d),0);
+  const lunas=DATA.filter(d=>d.st==='Lunas').length;
+  const cc=DATA.filter(d=>d.st==='Cicilan').length;
+  const bs=DATA.filter(d=>d.st==='Belum Setor').length;
+  const tanpaPerj=DATA.filter(d=>d.st==='Cicilan'&&!d.pj).length;
+  document.getElementById('dash-stats').innerHTML=`
+    <div class="sc red"><div class="sl">Total Sisa Piutang</div><div class="sv">${rpM(sisa)}</div><div class="ss">dari total temuan ${rpM(tot)}</div></div>
+    <div class="sc green"><div class="sl">Total Sudah Disetor</div><div class="sv">${rpM(setor)}</div><div class="ss">${pct(setor,tot)}% dari total temuan</div></div>
+    <div class="sc amber"><div class="sl">Paket Belum Setor</div><div class="sv">${bs}</div><div class="ss">dari ${DATA.length} total paket</div></div>
+    <div class="sc blue"><div class="sl">Paket Cicilan</div><div class="sv">${cc}</div><div class="ss">${tanpaPerj} tanpa perjanjian resmi</div></div>
+    <div class="sc green"><div class="sl">Paket Lunas</div><div class="sv">${lunas}</div><div class="ss">selesai — " + rpM(DATA.filter(d=>d.st==='Lunas').reduce((s,d)=>s+d.tm,0)) + " nilai temuan</div></div>
+    <div class="sc"><div class="sl">Total Paket</div><div class="sv">${DATA.length}</div><div class="ss">LHP 2023–2025</div></div>`;
+
+  let al='';
+  if(tanpaPerj>0)al+=`<div class="al amber"><i class="ti ti-alert-triangle"></i><span><strong>${tanpaPerj} penyedia</strong> mencicil secara informal — perjanjian angsuran resmi belum ada. Segera legalisasi sebelum audit berikutnya.</span></div>`;
+  const ov=DATA.filter(d=>d.s1t&&d.st!=='Lunas'&&daysDiff(d.s1t)>30&&d.th<2).length;
+  if(ov>0)al+=`<div class="al red"><i class="ti ti-alarm"></i><span><strong>${ov} penyedia</strong> sudah menerima SP1 lebih dari 30 hari dan belum naik ke SP2. Kirim SP2 segera.</span></div>`;
+  const nosp=DATA.filter(d=>d.st!=='Lunas'&&d.th===0).length;
+  if(nosp>0)al+=`<div class="al blue"><i class="ti ti-mail-exclamation"></i><span><strong>${nosp} paket</strong> (LHP 2025) belum memiliki SP1. Terbitkan segera setelah LHP diterima resmi.</span></div>`;
+  document.getElementById('dash-alerts').innerHTML=al;
+
+  // Chart status
+  if(cSt)cSt.destroy();
+  cSt=new Chart(document.getElementById('cStatus'),{type:'doughnut',data:{labels:['Belum Setor','Cicilan','Lunas'],datasets:[{data:[bs,cc,lunas],backgroundColor:['#e02424','#d97706','#057a55'],borderWidth:0}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},cutout:'62%'}});
+  document.getElementById('leg-status').innerHTML=`<span><span class="legdot" style="background:#e02424"></span>Belum Setor (${bs})</span><span><span class="legdot" style="background:#d97706"></span>Cicilan (${cc})</span><span><span class="legdot" style="background:#057a55"></span>Lunas (${lunas})</span>`;
+
+  // Chart sumber
+  const sbs=['LKPD 2023','PDTT 2024','LKPD 2024','LKPD 2025'];
+  const sbSisa=sbs.map(s=>Math.round(DATA.filter(d=>d.sb===s).reduce((a,d)=>a+getSisa(d),0)/1000000));
+  if(cSb)cSb.destroy();
+  cSb=new Chart(document.getElementById('cSumber'),{type:'bar',data:{labels:sbs,datasets:[{data:sbSisa,backgroundColor:['#3b82f6','#f59e0b','#8b5cf6','#ef4444'],borderWidth:0,borderRadius:4}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{ticks:{font:{size:10}}},y:{ticks:{callback:v=>v+'jt',font:{size:10}}}}}});
+
+  // Top 10
+  const top=[...DATA].filter(d=>getSisa(d)>0).sort((a,b)=>getSisa(b)-getSisa(a)).slice(0,10);
+  const h=Math.max(260,top.length*40+80);
+  document.getElementById('c10wrap').style.height=h+'px';
+  if(cT10)cT10.destroy();
+  cT10=new Chart(document.getElementById('cTop10'),{type:'bar',
+    data:{labels:top.map(d=>d.py.replace('CV. ','').replace('PT. ',' PT.').slice(0,24)),
+    datasets:[{data:top.map(d=>Math.round(getSisa(d)/1000000)),backgroundColor:top.map(d=>d.kl==='A'?'#e02424':d.kl==='B'?'#d97706':'#3b82f6'),borderWidth:0,borderRadius:3}]},
+    options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:ctx=>'Rp '+ctx.raw.toLocaleString('id-ID')+' juta'}}},scales:{x:{ticks:{callback:v=>v+'jt',font:{size:10}}},y:{ticks:{font:{size:11}}}}}});
+
+  // Tabel kritis
+  const kr=[...DATA].filter(d=>d.st!=='Lunas').sort((a,b)=>getSisa(b)-getSisa(a)).slice(0,8);
+  document.getElementById('tbl-kritis').innerHTML=kr.map(d=>{
+    const si=getSisa(d),p=pct(getSetor(d),d.tm),rc=d.kl==='A'?'rr':d.kl==='B'?'ra':'';
+    return`<tr class="${rc}"><td><strong>${d.py}</strong></td><td style="font-size:11px;max-width:200px">${d.nm.slice(0,55)}${d.nm.length>55?'…':''}</td><td>${d.sb}</td><td class="nr">${rp(d.tm)}</td><td class="nr" style="color:var(--red);font-weight:700">${rp(si)}</td><td><div class="pb" style="width:70px"><div class="pbf" style="width:${p}%;background:${p<20?'#e02424':p<60?'#d97706':'#057a55'}"></div></div><span style="font-size:10px">${p}%</span></td><td>${thDots(d.th)}</td><td>${stBadge(d.st)}</td><td><div class="ab"><button class="ib e" onclick="openEdit(${d.id})" title="Edit"><i class="ti ti-edit"></i></button><button class="ib" onclick="openHist(${d.id})" title="Histori"><i class="ti ti-coins"></i></button></div></td></tr>`;
+  }).join('');
+}
+function rSemua(){
+  const q=(document.getElementById('sq').value||'').toLowerCase();
+  const fs=document.getElementById('fSumber').value;
+  const fst=document.getElementById('fStatus').value;
+  const fk=document.getElementById('fKelompok').value;
+  const rows=DATA.filter(d=>{
+    if(q&&!d.nm.toLowerCase().includes(q)&&!d.py.toLowerCase().includes(q))return false;
+    if(fs&&d.sb!==fs)return false;
+    if(fst&&d.st!==fst)return false;
+    if(fk&&d.kl!==fk)return false;
+    return true;
+  });
+  document.getElementById('tbl-semua').innerHTML=rows.map((d,i)=>{
+    const st=getSetor(d),si=getSisa(d),p=pct(st,d.tm),rc=d.st==='Belum Setor'?'rr':d.st==='Cicilan'?'ra':'';
+    return`<tr class="${rc}"><td>${i+1}</td><td><strong>${d.py}</strong><br>${klBadge(d.kl)}</td><td style="font-size:11px;max-width:200px">${d.nm}</td><td>${d.sb}</td><td style="font-size:11px">${d.ppk||'—'}</td><td class="nr">${rp(d.tm)}</td><td class="nr">${rp(st)}</td><td class="nr" style="color:${si>0?'var(--red)':'var(--green)'};font-weight:700">${rp(si)}</td><td><div class="pb" style="width:55px"><div class="pbf" style="width:${p}%;background:${p===100?'#057a55':p>50?'#d97706':'#e02424'}"></div></div><span style="font-size:10px">${p}%</span></td><td>${thBadge(d.th)}</td><td>${stBadge(d.st)}</td><td><div class="ab"><button class="ib e" onclick="openEdit(${d.id})" title="Edit"><i class="ti ti-edit"></i></button><button class="ib" onclick="openHist(${d.id})" title="Histori"><i class="ti ti-coins"></i></button><button class="ib d" onclick="konfirmHapus(${d.id})" title="Hapus"><i class="ti ti-trash"></i></button></div></td></tr>`;
+  }).join('');
+  document.getElementById('cnt-semua').textContent=`Menampilkan ${rows.length} dari ${DATA.length} paket`;
+}
+function rBelum(){
+  const rows=DATA.filter(d=>d.st==='Belum Setor');
+  const nosp=rows.filter(d=>d.th===0).length;
+  document.getElementById('al-belum').innerHTML=nosp>0?`<div class="al red" style="margin-bottom:10px"><i class="ti ti-alert-circle"></i><span><strong>${nosp} paket</strong> belum memiliki SP sama sekali. Kirim SP1 segera.</span></div>`:'';
+  document.getElementById('tbl-belum').innerHTML=rows.map((d,i)=>{
+    const days=daysDiff(d.s1t);
+    const ov=d.s1t&&days>30;
+    return`<tr class="${ov?'rr':''}"><td>${i+1}</td><td><strong>${d.py}</strong></td><td style="font-size:11px;max-width:200px">${d.nm.slice(0,60)}${d.nm.length>60?'…':''}</td><td>${d.sb}</td><td class="nr" style="color:var(--red);font-weight:700">${rp(d.tm)}</td><td>${thBadge(d.th)}</td><td>${fmtD(d.s1t)}</td><td style="${ov?'color:var(--red);font-weight:700':''}">${d.s1t?days+' hari':'—'}</td><td style="font-size:11px">${reko(d)}</td><td><button class="ib e" onclick="openEdit(${d.id})" title="Edit"><i class="ti ti-edit"></i></button></td></tr>`;
+  }).join('');
+}
+function rCicilan(){
+  const rows=DATA.filter(d=>d.st==='Cicilan');
+  const tanpa=rows.filter(d=>!d.pj).length;
+  document.getElementById('al-cicilan').innerHTML=tanpa>0?`<div class="al amber"><i class="ti ti-file-off"></i><span><strong>${tanpa} penyedia</strong> mencicil tanpa perjanjian angsuran resmi. Segera buat dan tandatangani perjanjian bermeterai.</span></div>`:'';
+  document.getElementById('tbl-cicilan').innerHTML=rows.map((d,i)=>{
+    const st=getSetor(d),si=getSisa(d),p=pct(st,d.tm);
+    const lc=d.ci&&d.ci.length?d.ci[d.ci.length-1]:null;
+    return`<tr class="${!d.pj?'ra':''}"><td>${i+1}</td><td><strong>${d.py}</strong></td><td style="font-size:11px;max-width:180px">${d.nm.slice(0,55)}…</td><td class="nr">${rp(d.tm)}</td><td class="nr" style="color:var(--green)">${rp(st)}</td><td class="nr" style="color:var(--red);font-weight:700">${rp(si)}</td><td><div class="pb" style="width:80px"><div class="pbf" style="width:${p}%;background:${p>70?'#057a55':'#d97706'}"></div></div><span style="font-size:10px">${p}%</span></td><td style="font-size:11px">${lc?fmtD(lc.t)+' ('+rp(lc.j)+')':'—'}</td><td>${d.pj?'<span class="b b-green">Ada</span>':'<span class="b b-red">Belum Ada</span>'}</td><td><div class="ab"><button class="ib e" onclick="openEdit(${d.id})" title="Edit"><i class="ti ti-edit"></i></button><button class="ib" onclick="openHist(${d.id})" title="Histori"><i class="ti ti-list-details"></i></button></div></td></tr>`;
+  }).join('');
+}
+function rLhp25(){
+  const rows=DATA.filter(d=>d.sb==='LKPD 2025');
+  document.getElementById('tbl-lhp25').innerHTML=rows.map((d,i)=>{
+    return`<tr><td>${i+1}</td><td><strong>${d.py}</strong></td><td style="font-size:11px;max-width:220px">${d.nm.slice(0,60)}${d.nm.length>60?'…':''}</td><td style="font-size:11px">${d.kat}</td><td class="nr" style="font-weight:700">${rp(d.tm)}</td><td>${stBadge(d.st)}</td><td>${d.s1t?'<span class="b b-green">'+fmtD(d.s1t)+'</span>':'<span class="b b-red">Belum</span>'}</td><td style="font-size:11px;color:var(--tx2)">${d.ct||'—'}</td><td><button class="ib e" onclick="openEdit(${d.id})" title="Edit"><i class="ti ti-edit"></i></button></td></tr>`;
+  }).join('');
+}
+function rLunas(){
+  var q=(document.getElementById('qlun').value||'').toLowerCase();
+  var fs=document.getElementById('flunSb').value;
+  var rows=DATA.filter(function(d){
+    if(d.st!=='Lunas') return false;
+    if(q&&!d.nm.toLowerCase().includes(q)&&!d.py.toLowerCase().includes(q)) return false;
+    if(fs&&d.sb!==fs) return false;
+    return true;
+  });
+  var total=rows.reduce(function(s,d){return s+d.tm;},0);
+  document.getElementById('tbl-lunas').innerHTML=rows.map(function(d,i){
+    return '<tr><td>'+(i+1)+'</td><td><strong>'+d.py+'</strong></td><td style="font-size:11px;max-width:200px">'+d.nm+'</td><td>'+d.sb+'</td><td style="font-size:11px">'+d.jn+'</td><td class="nr" style="color:var(--green);font-weight:700">'+rp(d.tm)+'</td><td style="font-size:11px">'+(d.tgll?fmtD(d.tgll):'—')+'</td><td style="font-size:11px">'+(d.nol||'—')+'</td><td style="font-size:11px;color:var(--tx2)">'+(d.ct||'—')+'</td><td><button class="ib e" onclick="openEdit('+d.id+')" title="Edit"><i class="ti ti-edit"></i></button></td></tr>';
+  }).join('');
+  document.getElementById('cnt-lunas').textContent='Menampilkan '+rows.length+' paket lunas — Total nilai temuan: '+rp(total);
+}
+
+// ── Log Aktivitas ──
+function loadLog(){
+  if(!window.DB) return;
+  var {collection, getDocs, query, orderBy} = window.FS;
+  getDocs(query(collection(window.DB,'activity_log'), orderBy('ts','desc'))).then(function(snap){
+    if(snap.empty){ document.getElementById('log-container').innerHTML='<div style="padding:20px;text-align:center;color:var(--tx3);font-size:12px">Belum ada log aktivitas</div>'; return; }
+    var html = '';
+    snap.forEach(function(d){
+      var data = d.data();
+      var ts = data.ts ? new Date(data.ts.seconds*1000).toLocaleString('id-ID') : '—';
+      var roleColor = data.role==='admin'?'var(--red)':data.role==='editor'?'var(--amber)':'var(--blue)';
+      html += '<div class="log-item"><div style="display:flex;justify-content:space-between"><span class="log-act">'+data.action+'</span><span class="log-ts">'+ts+'</span></div><div class="log-user">'+data.email+' <span style="color:'+roleColor+';font-size:10px;font-weight:700">['+data.role+']</span></div><div style="font-size:11px;color:var(--tx3)">'+data.detail+'</div></div>';
+    });
+    document.getElementById('log-container').innerHTML = html;
+  }).catch(function(e){ toast('Error load log: '+e.message,'err'); });
+}
+
+// ═══════════════════════════════════════════════
+// EDIT MODAL
+// ═══════════════════════════════════════════════
+function openEdit(id){
+  const d=DATA.find(x=>x.id===id);if(!d)return;
+  editId=id;
+  tempCi=[...(d.ci||[]).map(c=>({...c}))];
+  document.getElementById('mo-edit-ttl').textContent='Edit: '+d.py;
+  const sv=(el,v)=>{const e=document.getElementById(el);if(e)e.value=v!==null&&v!==undefined?v:'';};
+  sv('eNm',d.nm);sv('ePy',d.py);sv('eNk',d.nk);sv('eVk',d.vk);sv('ePpk',d.ppk);sv('ePptk',d.pptk);
+  sv('eSb',d.sb);sv('eJn',d.jn);sv('eKat',d.kat);sv('eTA',d.ta);
+  sv('eTm',d.tm);sv('eSt',d.st);sv('ePj',d.pj?'1':'0');sv('eKl',d.kl);
+  sv('eS1n',d.s1n);sv('eS1t',d.s1t);sv('eS2n',d.s2n);sv('eS2t',d.s2t);
+  sv('eS3n',d.s3n);sv('eS3t',d.s3t);sv('eTh',d.th);sv('eCt',d.ct);sv('eTgll',d.tgll||'');sv('eNol',d.nol||'');
+  rCiList();
+  document.getElementById('mo-edit').classList.add('open');
+}
+function rCiList(){
+  document.getElementById('ci-list').innerHTML=tempCi.map((c,i)=>`
+    <div class="ci-row">
+      <input type="date" value="${c.t||''}" oninput="updCi(${i},'t',this.value)">
+      <input type="number" value="${c.j||''}" placeholder="Jumlah (Rp)" oninput="updCi(${i},'j',+this.value)">
+      <input type="text" value="${c.b||''}" placeholder="No. bukti setor" oninput="updCi(${i},'b',this.value)">
+      <button class="ci-del" onclick="delCi(${i})" title="Hapus baris"><i class="ti ti-x"></i></button>
+    </div>`).join('');
+  updCiTot();
+}
+function addCi(){tempCi.push({t:today(),j:0,b:''});rCiList();}
+function updCi(i,f,v){if(tempCi[i])tempCi[i][f]=v;updCiTot();}
+function delCi(i){tempCi.splice(i,1);rCiList();}
+function updCiTot(){document.getElementById('ciTot').textContent=rp(tempCi.reduce((s,c)=>s+(+c.j||0),0));}
+
+function saveEdit(){
+  if(!canEdit()){ toast('Anda tidak memiliki akses edit','err'); return; }
+  var idx = DATA.findIndex(function(x){ return x.id===editId; });
+  if(idx<0) return;
+  var g = function(id){ return document.getElementById(id).value; };
+  var updated = Object.assign({}, DATA[idx], {
+    nm:g('eNm'),py:g('ePy'),nk:g('eNk'),vk:+g('eVk'),ppk:g('ePpk'),pptk:g('ePptk'),
+    sb:g('eSb'),jn:g('eJn'),kat:g('eKat'),ta:g('eTA'),tm:+g('eTm'),st:g('eSt'),
+    pj:+g('ePj'),kl:g('eKl'),s1n:g('eS1n'),s1t:g('eS1t'),s2n:g('eS2n'),s2t:g('eS2t'),
+    s3n:g('eS3n'),s3t:g('eS3t'),th:+g('eTh'),ct:g('eCt'),
+    tgll:g('eTgll'),nol:g('eNol'),ci:[...tempCi]
+  });
+  fsSave(updated).then(function(){
+    logActivity('edit_paket', updated.py + ' — ' + updated.nm.slice(0,50));
+    toast('Perubahan disimpan ke Firestore');
+    closeMo('mo-edit');
+  }).catch(function(e){ toast('Gagal simpan: '+e.message,'err'); });
+}
+
+// ═══════════════════════════════════════════════
+// HISTORI SETORAN
+// ═══════════════════════════════════════════════
+function openHist(id){
+  const d=DATA.find(x=>x.id===id);if(!d)return;
+  const st=getSetor(d),si=getSisa(d);
+  let h=`<p style="font-weight:700;font-size:13px">${d.py}</p><p style="font-size:11px;color:var(--tx2);margin-bottom:12px">${d.nm}</p>`;
+  if(!d.ci||!d.ci.length){h+='<p style="color:var(--tx3);font-size:13px">Belum ada catatan setoran.</p>';}
+  else{
+    h+=`<table style="width:100%;font-size:12px;border-collapse:collapse"><thead><tr style="background:var(--sur2)"><th style="padding:6px 8px;border-bottom:1px solid var(--bd);text-align:left">No</th><th style="padding:6px 8px;border-bottom:1px solid var(--bd);text-align:left">Tanggal</th><th style="padding:6px 8px;border-bottom:1px solid var(--bd);text-align:right">Jumlah (Rp)</th><th style="padding:6px 8px;border-bottom:1px solid var(--bd);text-align:left">No. Bukti Setor</th></tr></thead><tbody>`;
+    d.ci.forEach((c,i)=>{h+=`<tr><td style="padding:5px 8px">${i+1}</td><td style="padding:5px 8px">${fmtD(c.t)}</td><td style="padding:5px 8px;text-align:right;font-weight:700">${rp(c.j)}</td><td style="padding:5px 8px;color:var(--tx2)">${c.b||'—'}</td></tr>`;});
+    h+=`</tbody></table>`;
+  }
+  h+=`<div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--bd);display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;font-size:12px">
+    <div><div style="font-size:10px;color:var(--tx3);margin-bottom:2px">Total Temuan</div><strong>${rp(d.tm)}</strong></div>
+    <div><div style="font-size:10px;color:var(--tx3);margin-bottom:2px">Sudah Disetor</div><strong style="color:var(--green)">${rp(st)}</strong></div>
+    <div><div style="font-size:10px;color:var(--tx3);margin-bottom:2px">Sisa Piutang</div><strong style="color:var(--red)">${rp(si)}</strong></div>
+  </div>`;
+  document.getElementById('mo-hb').innerHTML=h;
+  document.getElementById('mo-hist').classList.add('open');
+}
+
+// ═══════════════════════════════════════════════
+// TAMBAH PAKET BARU
+// ═══════════════════════════════════════════════
+function simpanBaru(){
+  if(!canEdit()){ toast('Anda tidak memiliki akses edit','err'); return; }
+  var g = function(id){ return document.getElementById(id).value; };
+  if(!g('tNm')||!g('tPy')){ toast('Nama paket dan penyedia wajib diisi','err'); return; }
+  var newId = DATA.length ? Math.max.apply(null, DATA.map(function(d){ return d.id; })) + 1 : 1;
+  var obj = {id:newId,nm:g('tNm'),py:g('tPy'),nk:g('tNk'),vk:+g('tVk'),ppk:g('tPpk'),pptk:g('tPptk'),
+    sb:g('tSb'),jn:g('tJn'),kat:g('tKat'),ta:g('tTA'),tm:+g('tTm'),st:g('tSt'),
+    pj:+g('tPj'),kl:g('tKl'),ci:[],s1n:g('tS1n'),s1t:g('tS1t'),s2n:g('tS2n'),s2t:g('tS2t'),
+    s3n:g('tS3n'),s3t:g('tS3t'),th:+g('tTh'),ct:g('tCt'),tgll:g('tTgll')||'',nol:g('tNol')||''};
+  fsSave(obj).then(function(){
+    logActivity('tambah_paket', obj.py + ' — ' + obj.nm.slice(0,50));
+    toast('Paket berhasil ditambahkan ke Firestore');
+    resetForm();
+    goPage('semua');
+  }).catch(function(e){ toast('Gagal simpan: '+e.message,'err'); });
+}
+
+function resetForm(){['tNm','tPy','tNk','tVk','tPpk','tPptk','tTm','tS1n','tS1t','tS2n','tS2t','tS3n','tS3t','tCt'].forEach(id=>{const e=document.getElementById(id);if(e)e.value='';});}
+
+// ═══════════════════════════════════════════════
+// HAPUS DATA
+// ═══════════════════════════════════════════════
+var hapusId = -1;
+function konfirmHapus(id, nm){
+  if(!canDelete()){ toast('Hanya Administrator yang dapat menghapus data','err'); return; }
+  hapusId = id;
+  document.getElementById('hNm').textContent = nm || '';
+  document.getElementById('mo-hapus').classList.add('open');
+}
+function doHapus(){
+  fsDelete(hapusId).then(function(){
+    logActivity('hapus_paket', 'ID: ' + hapusId);
+    toast('Data dihapus dari Firestore');
+    closeMo('mo-hapus');
+  }).catch(function(e){ toast('Gagal hapus: '+e.message,'err'); });
+}
+
+// ═══════════════════════════════════════════════
+// EXCEL EXPORT / IMPORT
+// ═══════════════════════════════════════════════
+function encCol(n){var s="";for(n++;n>0;n=Math.floor((n-1)/26))s=String.fromCharCode((n-1)%26+65)+s;return s;}
+function safeDownload(wb, filename){
+  try{
+    var wbout=XLSX.write(wb,{bookType:"xlsx",type:"array"});
+    var blob=new Blob([wbout],{type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
+    var url=URL.createObjectURL(blob);
+    var a=document.createElement("a");
+    a.href=url; a.download=filename;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function(){URL.revokeObjectURL(url);document.body.removeChild(a);},1500);
+  }catch(e2){
+    alert("Gagal membuat file: "+e2.message);
+  }
+}
+function dlExcel(){
+  try{
+    var wb=XLSX.utils.book_new();
+    var ws={};
+    var hdr=["No","Nama Paket","Penyedia Jasa","No Kontrak","Nilai Kontrak","Nama PPK","Nama PPTK","Sumber Temuan","Jenis Temuan","Kategori Belanja","Tahun Anggaran","Nilai Temuan","Sudah Disetor","Sisa Piutang","Persen Lunas","Status","Perjanjian","Kelompok","Tahap SP","No SP1","Tgl SP1","No SP2","Tgl SP2","No SP3","Tgl SP3","Histori Cicilan","Tgl Lunas","No Pelunasan","Catatan"];
+    for(var h=0;h<hdr.length;h++) ws[encCol(h)+"1"]={v:hdr[h],t:"s"};
+    for(var i=0;i<DATA.length;i++){
+      var d=DATA[i];
+      var st=getSetor(d); var si=getSisa(d);
+      var row=[
+        String(i+1),
+        String(d.nm||""),
+        String(d.py||""),
+        String(d.nk||""),
+        String(d.vk||0),
+        String(d.ppk||""),
+        String(d.pptk||""),
+        String(d.sb||""),
+        String(d.jn||""),
+        String(d.kat||""),
+        String(d.ta||""),
+        String(d.tm||0),
+        String(st),
+        String(si),
+        String(pct(st,d.tm))+"%",
+        String(d.st||""),
+        d.pj?"Ada":"Belum Ada",
+        String(d.kl||""),
+        (["Belum SP","SP1","SP2","SP3","Eskalasi"][d.th]||""),
+        String(d.s1n||""),
+        String(d.s1t||""),
+        String(d.s2n||""),
+        String(d.s2t||""),
+        String(d.s3n||""),
+        String(d.s3t||""),
+        (d.ci||[]).map(function(c){return fmtD(c.t)+": "+rp(c.j)+(c.b?" ("+c.b+")":"");}).join(" | "),
+        String(d.tgll?fmtD(d.tgll):""),
+        String(d.nol||""),
+        String(d.ct||"")
+      ];
+      var r=String(i+2);
+      for(var c=0;c<row.length;c++) ws[encCol(c)+r]={v:row[c],t:"s"};
+    }
+    ws["!ref"]="A1:"+encCol(hdr.length-1)+String(DATA.length+1);
+    XLSX.utils.book_append_sheet(wb,ws,"Monitoring");
+    var ws2={};
+    var sum=DATA.reduce(function(a,d){a.t+=d.tm;a.s+=getSetor(d);a.i+=getSisa(d);return a;},{t:0,s:0,i:0});
+    var s2rows=[["Item","Nilai"],["Total Temuan",String(sum.t)],["Total Disetor",String(sum.s)],["Sisa Piutang",String(sum.i)],["Jumlah Paket",String(DATA.length)],["Belum Setor",String(DATA.filter(function(d){return d.st==="Belum Setor";}).length)],["Cicilan",String(DATA.filter(function(d){return d.st==="Cicilan";}).length)],["Lunas",String(DATA.filter(function(d){return d.st==="Lunas";}).length)],["Tanggal Export",new Date().toLocaleDateString("id-ID")]];
+    for(var r2=0;r2<s2rows.length;r2++){ws2["A"+String(r2+1)]={v:s2rows[r2][0],t:"s"};ws2["B"+String(r2+1)]={v:s2rows[r2][1],t:"s"};}
+    ws2["!ref"]="A1:B"+String(s2rows.length);
+    XLSX.utils.book_append_sheet(wb,ws2,"Ringkasan");
+    safeDownload(wb,"Monitoring_Temuan_BPK_BM_"+new Date().toISOString().slice(0,10)+".xlsx");
+    toast("File Excel berhasil diunduh");
+  }catch(err){
+    alert("Gagal download Excel: "+err.message);
+  }
+}
+function dlTemplate(){
+  try{
+    var wb=XLSX.utils.book_new();
+    var ws={};
+    var cols=["Nama Paket","Penyedia Jasa","No Kontrak","Nilai Kontrak","Nama PPK","Nama PPTK","Sumber Temuan","Jenis Temuan","Kategori Belanja","Tahun Anggaran","Nilai Temuan","Status Pembayaran","Perjanjian Angsuran","Kelompok","Tahap SP","No SP1","Tgl SP1","No SP2","Tgl SP2","Catatan"];
+    var contoh=["(wajib) Rehabilitasi Jalan Karangpandan-Blora","(wajib) CV. Redjo Pawiro","05.9/MK/PPK.1/XI/2025","4351337879","Nama PPK","Nama PPTK","LKPD 2025","Kurang Volume","Belanja Modal Jalan","2025","192082000","Belum Setor","Belum Ada","C","Belum SP","","","","",""];
+    for(var c=0;c<cols.length;c++){
+      ws[encCol(c)+"1"]={v:cols[c],t:"s"};
+      ws[encCol(c)+"2"]={v:contoh[c],t:"s"};
+    }
+    ws["!ref"]="A1:"+encCol(cols.length-1)+"2";
+    XLSX.utils.book_append_sheet(wb,ws,"Template");
+    safeDownload(wb,"Template_Import_Temuan_BPK.xlsx");
+    toast("Template berhasil diunduh");
+  }catch(err){
+    alert("Error template: "+err.message);
+  }
+}
+function importExcel(inp){
+  if(!canEdit()){ toast('Anda tidak memiliki akses import','err'); return; }
+  var file=inp.files[0]; if(!file) return;
+  var reader=new FileReader();
+  reader.onload=function(e){
+    try{
+      var wb=XLSX.read(e.target.result,{type:"array"});
+      var rows=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
+      if(!rows.length){ toast('File kosong atau format tidak sesuai','err'); return; }
+      importExcelToFirestore(rows);
+    }catch(err){
+      document.getElementById("import-result").innerHTML='<div class="al red"><i class="ti ti-x"></i><span>Gagal membaca file: '+err.message+'</span></div>';
+    }
+  };
+  reader.readAsArrayBuffer(file); inp.value="";
+}
+
+function importExcelToFirestore(rows){
+  if(!window.DB) return;
+  var {writeBatch, doc, collection, serverTimestamp} = window.FS;
+  var batch = writeBatch(window.DB);
+  var add=0, upd=0;
+  rows.forEach(function(r){
+    if(!r['Nama Paket']||!r['Penyedia Jasa']) return;
+    var ex = DATA.find(function(d){ return d.nm===r['Nama Paket'] && d.py===r['Penyedia Jasa']; });
+    var thIdx = ['Belum SP','SP1','SP2','SP3','Eskalasi'].indexOf(r['Tahap SP']||'Belum SP');
+    var obj = {nm:r['Nama Paket'],py:r['Penyedia Jasa'],nk:r['No Kontrak']||'',
+      vk:+(r['Nilai Kontrak']||0),ppk:r['Nama PPK']||'',pptk:r['Nama PPTK']||'',
+      sb:r['Sumber Temuan']||'LKPD 2025',jn:r['Jenis Temuan']||'Kurang Volume',
+      kat:r['Kategori Belanja']||'Belanja Modal Jalan',ta:String(r['Tahun Anggaran']||'2025'),
+      tm:+(r['Nilai Temuan']||0),st:r['Status Pembayaran']||'Belum Setor',
+      pj:r['Perjanjian Angsuran']==='Ada'?1:0,kl:r['Kelompok']||'C',
+      s1n:r['No SP1']||'',s1t:r['Tgl SP1']||'',s2n:r['No SP2']||'',s2t:r['Tgl SP2']||'',
+      s3n:'',s3t:'',th:thIdx<0?0:thIdx,ct:r['Catatan']||'',
+      tgll:r['Tgl Lunas']||'',nol:r['No Pelunasan']||'',ci:[]};
+    if(ex){ obj.id = ex.id; upd++; } else { obj.id = DATA.length ? Math.max.apply(null,DATA.map(function(d){return d.id;}))+1+add : add+1; add++; }
+    obj.updatedAt = serverTimestamp();
+    obj.updatedBy = window.currentUser?.email || '';
+    var ref = doc(collection(window.DB,'paket'), String(obj.id));
+    batch.set(ref, obj);
+  });
+  batch.commit().then(function(){
+    logActivity('import_excel', add+' baru, '+upd+' diperbarui');
+    document.getElementById('import-result').innerHTML='<div class="al blue"><i class="ti ti-check"></i><span>Import selesai: <strong>'+add+' paket baru</strong> ditambahkan, <strong>'+upd+' paket</strong> diperbarui.</span></div>';
+    toast('Import berhasil: '+add+' baru, '+upd+' diperbarui');
+  }).catch(function(e){ toast('Gagal import: '+e.message,'err'); });
+}
+
+function dropFile(e){
+  e.preventDefault();
+  document.getElementById('uz').classList.remove('drag');
+  const f=e.dataTransfer.files[0];
+  if(f&&(f.name.endsWith('.xlsx')||f.name.endsWith('.xls'))){const dt=new DataTransfer();dt.items.add(f);document.getElementById('fi').files=dt.files;importExcel(document.getElementById('fi'));}
+}
+
+// ═══════════════════════════════════════════════
+// NAV BINDING
+// ═══════════════════════════════════════════════
+document.querySelectorAll('.ni').forEach(function(n){
+  n.addEventListener('click', function(){
+    goPage(this.dataset.page);
+  });
+});
+
+
+document.querySelectorAll('.ni').forEach(function(n){
+  n.addEventListener('click',function(){ goPage(this.dataset.page); });
+});
+</script>
+</body>
+</html>
