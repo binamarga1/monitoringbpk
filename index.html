@@ -179,7 +179,11 @@ import { getFirestore, collection, doc, setDoc, getDocs,
   deleteDoc, onSnapshot, query, orderBy, serverTimestamp, writeBatch }
   from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 
-// ── GANTI 6 NILAI INI DENGAN CONFIG DARI FIREBASE CONSOLE ──
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  LANGKAH 1 — GANTI 6 NILAI DI BAWAH INI                    ║
+// ║  Ambil dari: Firebase Console → Project Settings → Your Apps ║
+// ║  HANYA EDIT BAGIAN INI, JANGAN YANG LAIN                    ║
+// ╚══════════════════════════════════════════════════════════════╝
 const firebaseConfig = {
   apiKey: "AIzaSyAETFXnSixocywPW2gfwuMDil7Ylx8LgV0",
   authDomain: "monitoring-temuan.firebaseapp.com",
@@ -188,6 +192,7 @@ const firebaseConfig = {
   messagingSenderId: "609461512736",
   appId: "1:609461512736:web:f78cdf341666b0b1842a45"
 };
+// ══════════════════════════════════════════════════════════════
 
 // Cek apakah config sudah diisi
 const isConfigured = !Object.values(firebaseConfig).some(v=>v.includes('GANTI_'));
@@ -223,6 +228,7 @@ if(!isConfigured){
   const app = initializeApp(firebaseConfig);
   const db  = getFirestore(app);
   window.DB = db;
+  window._activeProjectId = firebaseConfig.projectId;
   window._FS = { collection, doc, setDoc, getDocs, deleteDoc,
                  onSnapshot, query, orderBy, serverTimestamp, writeBatch };
 
@@ -500,22 +506,21 @@ if(!isConfigured){
       </button>
 
       <div style="height:1px;background:var(--bd);margin:20px 0"></div>
-      <div class="fsec">Konfigurasi Firebase (jika belum)</div>
+      <div class="fsec">Config Firebase Aktif</div>
+      <div id="setup-config-display" style="font-size:12px;color:var(--tx2);margin-bottom:14px">
+        Memuat config...
+      </div>
       <div class="al blue" style="margin-bottom:10px">
         <i class="ti ti-info-circle"></i>
-        <span>Jika status di atas menunjukkan <strong>Mode Offline</strong>, berarti
-        Firebase belum dikonfigurasi. Ikuti panduan di file <strong>PANDUAN_SETUP.md</strong>
-        untuk mengisi 6 nilai <code>firebaseConfig</code> di dalam file HTML ini.</span>
+        <span>
+          Untuk mengisi atau mengganti config Firebase, buka file HTML ini dengan
+          <strong>teks editor</strong> (Notepad++, VS Code, dll), cari baris
+          <code>apiKey: "GANTI_API_KEY"</code> di bagian <code>&lt;script type="module"&gt;</code>
+          paling atas, lalu ganti keenam nilainya dengan config dari Firebase Console.
+          <strong>Jangan edit bagian &lt;pre&gt; atau teks lain di halaman ini</strong> — 
+          itu hanya tampilan panduan, bukan tempat mengisi config.
+        </span>
       </div>
-      <p style="font-size:12px;color:var(--tx2);margin-bottom:10px">Lokasi config di file HTML:</p>
-      <pre style="background:var(--sur2);padding:12px;border-radius:var(--r);font-size:11px;overflow-x:auto;border:1px solid var(--bd)">const firebaseConfig = {
-  apiKey: "AIzaSyAETFXnSixocywPW2gfwuMDil7Ylx8LgV0",
-  authDomain: "monitoring-temuan.firebaseapp.com",
-  projectId: "monitoring-temuan",
-  storageBucket: "monitoring-temuan.firebasestorage.app",
-  messagingSenderId: "609461512736",
-  appId: "1:609461512736:web:f78cdf341666b0b1842a45"
-};</pre>
     </div>
   </div>
 
@@ -640,26 +645,39 @@ function startRealtime(){
 }
 
 async function fsSave(obj){
-  if(!DB){ toast('Database belum terhubung','err'); return; }
+  if(!window.DB){ toast('Database belum terhubung. Cek config Firebase.','err'); return; }
   const {doc,setDoc,serverTimestamp} = window._FS;
   const d = {...obj}; delete d._docId;
   d.updatedAt = serverTimestamp();
-  await setDoc(doc(DB,'paket',String(d.id)), d);
+  await setDoc(doc(window.DB,'paket',String(d.id)), d);
 }
 
 async function fsDelete(id){
-  if(!DB){ toast('Database belum terhubung','err'); return; }
+  if(!window.DB){ toast('Database belum terhubung. Cek config Firebase.','err'); return; }
   const {doc,deleteDoc} = window._FS;
-  await deleteDoc(doc(DB,'paket',String(id)));
+  await deleteDoc(doc(window.DB,'paket',String(id)));
 }
 
 async function fsInitSeed(){
-  if(!DB){ toast('Firebase belum dikonfigurasi. Isi firebaseConfig dulu.','err'); return; }
+  // Tunggu DB siap (module script async — bisa butuh beberapa saat)
+  if(!window.DB){
+    toast('Menunggu koneksi Firebase...','');
+    await new Promise(r=>setTimeout(r,2000));
+  }
+  if(!window.DB){
+    toast('Firebase tidak terhubung. Cek firebaseConfig di file HTML (bukan di teks panduan halaman ini).','err');
+    return;
+  }
+  const DB = window.DB;
   const {collection,getDocs,writeBatch,doc,serverTimestamp} = window._FS;
   const snap = await getDocs(collection(DB,'paket'));
   if(snap.size > 0){
-    toast('Data sudah ada di Firestore ('+snap.size+' paket). Dibatalkan.','err');
-    return;
+    if(confirm('Firestore sudah berisi '+snap.size+' paket. Timpa semua data dengan data awal? (Tidak disarankan)')){
+      // lanjut
+    } else {
+      toast('Dibatalkan. Data Firestore tidak diubah.','');
+      return;
+    }
   }
   loadDefault();
   const batch = writeBatch(DB);
@@ -1123,9 +1141,9 @@ function importExcel(inp){
         allRows.push(obj);
       });
       if(!allRows.length){ toast('Tidak ada baris valid di file','err'); return; }
-      if(!DB){ toast('Database belum terhubung','err'); return; }
+      if(!window.DB){ toast('Database belum terhubung. Cek config Firebase.','err'); return; }
       const {writeBatch,doc,collection,serverTimestamp} = window._FS;
-      const batch = writeBatch(DB);
+      const batch = writeBatch(window.DB);
       allRows.forEach(r=>{
         const obj={...r}; delete obj._docId;
         obj.updatedAt=serverTimestamp();
@@ -1171,11 +1189,21 @@ function rLunas(){
 // ── NAV BINDING ──
 function refreshSetupStatus(){
   const box = document.getElementById('setup-status-msg');
+  const cfgBox = document.getElementById('setup-config-display');
   if(!box) return;
-  if(!window.DB || !firebaseConfig || Object.values(window._FS||{}).length===0){
-    box.innerHTML = '<span style="color:var(--amber)">⚠ Mode Offline — Firebase belum dikonfigurasi. Data tersimpan di localStorage browser ini saja.</span>';
+
+  if(!window.DB || Object.values(window._FS||{}).length===0){
+    box.innerHTML = '<span style="color:var(--amber);font-weight:600">⚠ Mode Offline</span> — Firebase belum dikonfigurasi. Data tersimpan di localStorage browser ini saja dan <strong>tidak tersinkron</strong> ke perangkat lain.';
+    box.parentElement.style.borderColor = '#fcd34d';
+    box.parentElement.style.background = '#fffbeb';
+    if(cfgBox) cfgBox.innerHTML = '<div class="al red"><i class="ti ti-x"></i><span><strong>firebaseConfig belum diisi.</strong> Buka file HTML dengan teks editor → cari <code>apiKey: "GANTI_API_KEY"</code> di baris <code>&lt;script type="module"&gt;</code> → ganti 6 nilainya → simpan file → upload ulang ke GitHub.</span></div>';
   } else {
-    box.innerHTML = '<span style="color:var(--green)">● Terhubung ke Firebase Firestore — data tersinkron real-time ke semua perangkat.</span>';
+    // Tampilkan project ID yang aktif
+    const pid = (window._activeProjectId || 'terhubung');
+    box.innerHTML = '<span style="color:var(--green);font-weight:600">● Terhubung ke Firebase Firestore</span> — Project: <code>'+pid+'</code><br>Data tersinkron real-time ke semua perangkat yang membuka aplikasi ini.';
+    box.parentElement.style.borderColor = '#a7f3d0';
+    box.parentElement.style.background = '#f3faf7';
+    if(cfgBox) cfgBox.innerHTML = '<div class="al" style="background:var(--greenbg);color:var(--greentx);border:1px solid #a7f3d0"><i class="ti ti-check"></i><span>Firebase sudah terkonfigurasi dan terhubung. Project ID: <strong>'+pid+'</strong></span></div>';
   }
 }
 
