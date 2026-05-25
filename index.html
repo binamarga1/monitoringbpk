@@ -168,6 +168,86 @@ tr:hover td{background:#fafbfc}
 .leg{display:flex;flex-wrap:wrap;gap:10px;margin-top:8px;font-size:11px;color:var(--tx2)}
 .legdot{width:10px;height:10px;border-radius:2px;display:inline-block;margin-right:3px}
 </style>
+<!-- ═══════════════════════════════════════════════════════════════
+     FIREBASE CONFIG — GANTI 6 NILAI DI BAWAH INI
+     Panduan: lihat README.md atau PANDUAN_SETUP.md
+═══════════════════════════════════════════════════════════════ -->
+<script type="module">
+import { initializeApp }
+  from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import { getFirestore, collection, doc, setDoc, getDocs,
+  deleteDoc, onSnapshot, query, orderBy, serverTimestamp, writeBatch }
+  from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+// ── GANTI 6 NILAI INI DENGAN CONFIG DARI FIREBASE CONSOLE ──
+const firebaseConfig = {
+  apiKey: "AIzaSyAETFXnSixocywPW2gfwuMDil7Ylx8LgV0",
+  authDomain: "monitoring-temuan.firebaseapp.com",
+  projectId: "monitoring-temuan",
+  storageBucket: "monitoring-temuan.firebasestorage.app",
+  messagingSenderId: "609461512736",
+  appId: "1:609461512736:web:f78cdf341666b0b1842a45"
+};
+
+// Cek apakah config sudah diisi
+const isConfigured = !Object.values(firebaseConfig).some(v=>v.includes('GANTI_'));
+
+if(!isConfigured){
+  // Mode offline — pakai localStorage sebagai fallback sementara
+  console.warn('Firebase belum dikonfigurasi. Berjalan dalam mode offline (localStorage).');
+  window.DB = null;
+  window._FS = {};
+  // Fallback ke localStorage
+  const SK = 'bpk_bm_v3';
+  window.fsSave = async function(obj){
+    const idx = DATA.findIndex(x=>x.id===obj.id);
+    if(idx>=0) DATA[idx]=obj; else DATA.push(obj);
+    localStorage.setItem(SK, JSON.stringify(DATA));
+    setUpd();
+  };
+  window.fsDelete = async function(id){
+    DATA = DATA.filter(d=>d.id!==id);
+    localStorage.setItem(SK, JSON.stringify(DATA));
+  };
+  window.fsInitSeed = async function(){ toast('Konfigurasi Firebase dulu di file HTML','err'); };
+  window.startRealtime = function(){
+    try{ DATA=JSON.parse(localStorage.getItem(SK)||'[]'); }catch(e){ DATA=[]; }
+    if(!DATA.length) loadDefault();
+    setUpd(); rDash();
+    document.getElementById('firebase-status').innerHTML =
+      '<span style="color:#d97706;font-size:10px">⚠ Mode Offline (localStorage)</span>';
+  };
+  document.addEventListener('DOMContentLoaded', ()=> window.startRealtime());
+} else {
+  // Mode online — Firebase Firestore
+  const app = initializeApp(firebaseConfig);
+  const db  = getFirestore(app);
+  window.DB = db;
+  window._FS = { collection, doc, setDoc, getDocs, deleteDoc,
+                 onSnapshot, query, orderBy, serverTimestamp, writeBatch };
+
+  window.startRealtime = function(){
+    const q = query(collection(db,'paket'), orderBy('id','asc'));
+    window._unsub = onSnapshot(q, snap => {
+      DATA = [];
+      snap.forEach(d => DATA.push({...d.data()}));
+      setUpd();
+      const cur = document.querySelector('.page.on');
+      if(cur){
+        const pid = cur.id.replace('pg-','');
+        ({dashboard:rDash,semua:rSemua,belum:rBelum,cicilan:rCicilan,
+          lhp25:rLhp25,lunas:rLunas})[pid]?.();
+      }
+    }, err => {
+      toast('Koneksi Firestore error: '+err.message, 'err');
+    });
+    document.getElementById('firebase-status').innerHTML =
+      '<span style="color:#057a55;font-size:10px">● Terhubung Firestore</span>';
+  };
+
+  document.addEventListener('DOMContentLoaded', ()=> window.startRealtime());
+}
+</script>
 </head>
 <body>
 <div id="toast"></div>
@@ -186,11 +266,13 @@ tr:hover td{background:#fafbfc}
     <button class="ni" data-page="belum"><i class="ti ti-alert-triangle"></i>Belum Setor</button>
     <button class="ni" data-page="cicilan"><i class="ti ti-refresh-alert"></i>Cicilan Berjalan</button>
     <button class="ni" data-page="lhp25"><i class="ti ti-file-invoice"></i>LHP TA 2025</button>
+    <button class="ni" data-page="lunas"><i class="ti ti-circle-check"></i>Sudah Lunas</button>
     <div class="nav-sec">Data</div>
     <button class="ni" data-page="tambah"><i class="ti ti-plus"></i>Tambah Paket</button>
     <button class="ni" data-page="impor"><i class="ti ti-upload"></i>Import Excel</button>
+    <button class="ni" data-page="setup"><i class="ti ti-database-import"></i>Setup Awal</button>
   </nav>
-  <div class="sb-foot">Update: <span id="lupd">—</span></div>
+  <div class="sb-foot"><div id="firebase-status" style="margin-bottom:4px"></div>Update: <span id="lupd">—</span></div>
 </aside>
 
 <!-- MAIN -->
@@ -290,6 +372,26 @@ tr:hover td{background:#fafbfc}
     </tr></thead><tbody id="tbl-lhp25"></tbody></table></div>
   </div>
 
+  <!-- SUDAH LUNAS -->
+  <div class="page" id="pg-lunas">
+    <div class="al blue" style="margin-bottom:12px">
+      <i class="ti ti-circle-check"></i>
+      <span>Data penyedia yang telah <strong>menyelesaikan seluruh kewajiban</strong> pengembalian kelebihan pembayaran kepada Kas Daerah.</span>
+    </div>
+    <div class="fr">
+      <input type="text" id="qlun" placeholder="Cari nama paket / penyedia…" oninput="rLunas()">
+      <select id="flunSb" onchange="rLunas()">
+        <option value="">Semua sumber</option>
+        <option>LKPD 2023</option><option>PDTT 2024</option><option>LKPD 2024</option><option>LKPD 2025</option>
+      </select>
+    </div>
+    <div class="tw"><table><thead><tr>
+      <th>#</th><th>Penyedia Jasa</th><th>Nama Paket</th><th>Sumber</th><th>Jenis Temuan</th>
+      <th class="nr">Nilai Temuan (Rp)</th><th>Tgl Lunas</th><th>No. Bukti Pelunasan</th><th>Catatan</th><th>Aksi</th>
+    </tr></thead><tbody id="tbl-lunas"></tbody></table></div>
+    <div id="cnt-lunas" style="font-size:11px;color:var(--tx3);margin-top:7px"></div>
+  </div>
+
   <!-- TAMBAH PAKET -->
   <div class="page" id="pg-tambah">
     <div style="max-width:700px">
@@ -332,7 +434,12 @@ tr:hover td{background:#fafbfc}
           <select id="tTh"><option value="0">Belum SP</option><option value="1">SP1 Terkirim</option><option value="2">SP2 Terkirim</option><option value="3">SP3 Terkirim</option><option value="4">Eskalasi/TP-TGR</option></select></div>
       </div>
       <div class="fsec">Catatan Internal</div>
-      <div class="fgi" style="margin-bottom:14px"><textarea id="tCt" rows="3" placeholder="Riwayat komunikasi, kondisi khusus, dll…"></textarea></div>
+      <div class="fgi" style="margin-bottom:10px"><textarea id="tCt" rows="3" placeholder="Riwayat komunikasi, kondisi khusus, dll…"></textarea></div>
+      <div class="fsec">Pelunasan (isi jika status Lunas)</div>
+      <div class="fg2" style="margin-bottom:14px">
+        <div class="fgi"><label>Tanggal Pelunasan</label><input id="tTgll" type="date"></div>
+        <div class="fgi"><label>No. Bukti / Referensi Pelunasan</label><input id="tNol" type="text" placeholder="No. bukti setor / referensi"></div>
+      </div>
       <div style="display:flex;gap:8px">
         <button class="btn btn-p" onclick="simpanBaru()"><i class="ti ti-check"></i>Simpan Paket</button>
         <button class="btn" onclick="resetForm()"><i class="ti ti-refresh"></i>Reset</button>
@@ -367,6 +474,48 @@ tr:hover td{background:#fafbfc}
           • Histori cicilan tidak diimpor via Excel — input manual di menu Edit
         </p>
       </div>
+    </div>
+  </div>
+
+
+  <!-- SETUP AWAL FIRESTORE -->
+  <div class="page" id="pg-setup">
+    <div style="max-width:560px">
+      <div class="fsec">Status Koneksi Firebase</div>
+      <div id="setup-status-box" style="padding:12px 14px;background:var(--sur2);border-radius:var(--r);border:1px solid var(--bd);font-size:12px;margin-bottom:16px">
+        <div id="setup-status-msg">Mengecek koneksi…</div>
+      </div>
+
+      <div class="fsec">Inisialisasi Data ke Firestore</div>
+      <div class="al amber" style="margin-bottom:14px">
+        <i class="ti ti-alert-triangle"></i>
+        <span><strong>Hanya gunakan sekali</strong> saat pertama kali setup. Jika Firestore sudah berisi data, operasi ini dibatalkan otomatis dan data tidak akan tertimpa.</span>
+      </div>
+      <p style="font-size:12px;color:var(--tx2);margin-bottom:14px">
+        Tombol ini akan memuat <strong>80 paket data awal</strong> (termasuk semua data lunas)
+        ke Firestore. Setelah ini semua perangkat yang membuka aplikasi akan melihat data yang sama secara real-time.
+      </p>
+      <button class="btn btn-p" onclick="fsInitSeed()">
+        <i class="ti ti-database-import"></i>Muat 80 Paket Data Awal ke Firestore
+      </button>
+
+      <div style="height:1px;background:var(--bd);margin:20px 0"></div>
+      <div class="fsec">Konfigurasi Firebase (jika belum)</div>
+      <div class="al blue" style="margin-bottom:10px">
+        <i class="ti ti-info-circle"></i>
+        <span>Jika status di atas menunjukkan <strong>Mode Offline</strong>, berarti
+        Firebase belum dikonfigurasi. Ikuti panduan di file <strong>PANDUAN_SETUP.md</strong>
+        untuk mengisi 6 nilai <code>firebaseConfig</code> di dalam file HTML ini.</span>
+      </div>
+      <p style="font-size:12px;color:var(--tx2);margin-bottom:10px">Lokasi config di file HTML:</p>
+      <pre style="background:var(--sur2);padding:12px;border-radius:var(--r);font-size:11px;overflow-x:auto;border:1px solid var(--bd)">const firebaseConfig = {
+  apiKey:            "GANTI_API_KEY",          ← ganti ini
+  authDomain:        "GANTI_PROJECT_ID...",    ← ganti ini
+  projectId:         "GANTI_PROJECT_ID",       ← ganti ini
+  storageBucket:     "GANTI_PROJECT_ID...",    ← ganti ini
+  messagingSenderId: "GANTI_SENDER_ID",        ← ganti ini
+  appId:             "GANTI_APP_ID"            ← ganti ini
+};</pre>
     </div>
   </div>
 
@@ -425,6 +574,11 @@ tr:hover td{background:#fafbfc}
       </div>
       <div class="fsec">Catatan Internal</div>
       <div class="fgi"><textarea id="eCt" rows="3"></textarea></div>
+      <div class="fsec">Pelunasan</div>
+      <div class="fg2">
+        <div class="fgi"><label>Tanggal Pelunasan</label><input id="eTgll" type="date"></div>
+        <div class="fgi"><label>No. Bukti / Referensi Pelunasan</label><input id="eNol" type="text" placeholder="No. bukti setor / referensi"></div>
+      </div>
     </div>
     <div class="mf"><button class="btn" onclick="closeMo('mo-edit')">Batal</button><button class="btn btn-p" onclick="saveEdit()"><i class="ti ti-check"></i>Simpan Perubahan</button></div>
   </div>
@@ -451,7 +605,8 @@ tr:hover td{background:#fafbfc}
 </div>
 
 <script>
-const SK='bpk_bm_v3';
+// Firebase — diisi otomatis setelah initApp()
+let DB=null;
 let DATA=[], editId=-1, hapusId=-1, tempCi=[], cSt=null, cSb=null, cT10=null;
 
 const rp=v=>'Rp '+Math.round(v||0).toLocaleString('id-ID');
@@ -463,47 +618,143 @@ const fmtD=d=>{if(!d)return'—';try{return new Date(d).toLocaleDateString('id-I
 const getSetor=d=>(d.ci||[]).reduce((s,c)=>s+(+c.j||0),0);
 const getSisa=d=>Math.max(0,(d.tm||0)-getSetor(d));
 
-function load(){
-  try{DATA=JSON.parse(localStorage.getItem(SK)||'[]');}catch(e){DATA=[];}
-  if(!DATA.length)loadDefault();
-  setUpd();
+// ── Firebase helpers ──────────────────────────────────────────────────
+function setUpd(){document.getElementById('lupd').textContent=new Date().toLocaleTimeString('id-ID',{hour:'2-digit',minute:'2-digit',second:'2-digit'});}
+
+function startRealtime(){
+  if(!DB) return;
+  const {collection,query,orderBy,onSnapshot} = window._FS;
+  const q = query(collection(DB,'paket'), orderBy('id','asc'));
+  window._unsub = onSnapshot(q, snap => {
+    DATA = [];
+    snap.forEach(d => DATA.push({...d.data()}));
+    setUpd();
+    // re-render halaman aktif
+    const cur = document.querySelector('.page.on');
+    if(cur){
+      const pid = cur.id.replace('pg-','');
+      ({dashboard:rDash,semua:rSemua,belum:rBelum,cicilan:rCicilan,
+        lhp25:rLhp25,lunas:rLunas})[pid]?.();
+    }
+  }, err => toast('Koneksi Firestore error: '+err.message,'err'));
 }
-function save(){localStorage.setItem(SK,JSON.stringify(DATA));setUpd();}
-function setUpd(){document.getElementById('lupd').textContent=new Date().toLocaleDateString('id-ID',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'});}
+
+async function fsSave(obj){
+  if(!DB){ toast('Database belum terhubung','err'); return; }
+  const {doc,setDoc,serverTimestamp} = window._FS;
+  const d = {...obj}; delete d._docId;
+  d.updatedAt = serverTimestamp();
+  await setDoc(doc(DB,'paket',String(d.id)), d);
+}
+
+async function fsDelete(id){
+  if(!DB){ toast('Database belum terhubung','err'); return; }
+  const {doc,deleteDoc} = window._FS;
+  await deleteDoc(doc(DB,'paket',String(id)));
+}
+
+async function fsInitSeed(){
+  if(!DB){ toast('Firebase belum dikonfigurasi. Isi firebaseConfig dulu.','err'); return; }
+  const {collection,getDocs,writeBatch,doc,serverTimestamp} = window._FS;
+  const snap = await getDocs(collection(DB,'paket'));
+  if(snap.size > 0){
+    toast('Data sudah ada di Firestore ('+snap.size+' paket). Dibatalkan.','err');
+    return;
+  }
+  loadDefault();
+  const batch = writeBatch(DB);
+  DATA.forEach(d=>{
+    const obj={...d}; delete obj._docId;
+    obj.updatedAt=serverTimestamp(); obj.updatedBy='init';
+    batch.set(doc(DB,'paket',String(d.id)), obj);
+  });
+  await batch.commit();
+  toast('✓ '+DATA.length+' paket berhasil dimuat ke Firestore!');
+}
 
 function loadDefault(){
   DATA=[
-    {id:1,nm:'Penanganan Long Segment Jl. Bendungan–Banjarharjo',py:'CV. Central Karya',nk:'',vk:4142232000,ppk:'',pptk:'',sb:'LKPD 2023',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2023',tm:426683000,st:'Cicilan',pj:0,kl:'B',ci:[{t:'2024-06-26',j:60000000,b:''},{t:'2024-09-19',j:50000000,b:''},{t:'2024-10-20',j:40000000,b:''},{t:'2024-10-27',j:75000000,b:''}],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:1,ct:'Cicilan berjalan sejak Juni 2024. Perjanjian angsuran formal belum ada — segera legalisasi.'},
-    {id:2,nm:'Penanganan Long Segment Jl. Beji–Pojok, Kec. Tasikmadu',py:'CV. Kedaton',nk:'',vk:7234084000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurvol + Tidak Sesuai Spek',kat:'Belanja Modal Jalan',ta:'2024',tm:345615000,st:'Cicilan',pj:0,kl:'B',ci:[{t:'2025-12-30',j:18115000,b:''}],s1n:'900/94.6.1/V/2026',s1t:'2026-05-13',s2n:'',s2t:'',s3n:'',s3t:'',th:1,ct:'Baru 5% lunas. Perjanjian angsuran belum ada.'},
-    {id:3,nm:'Long Segment Jl. Klodran–Sawahan, Kec. Colomadu',py:'CV. Yogya Resita',nk:'',vk:2041296000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2024',tm:10296000,st:'Belum Setor',pj:0,kl:'A',ci:[],s1n:'900/84.6.66/V/2026',s1t:'2026-05-13',s2n:'',s2t:'',s3n:'',s3t:'',th:1,ct:'Surat pemberitahuan 13 Mei 2026.'},
-    {id:4,nm:'Long Segment Jl. Jambangan–Pendem, Kec. Mojogedang',py:'CV. Karya Agung',nk:'',vk:10714124000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurvol + Tidak Sesuai Spek',kat:'Belanja Modal Jalan',ta:'2024',tm:309429000,st:'Cicilan',pj:0,kl:'B',ci:[{t:'2025-05-28',j:25000000,b:''},{t:'2025-07-28',j:50000000,b:''},{t:'2026-01-06',j:50000000,b:''}],s1n:'900/84.6.9/V/2026',s1t:'2026-05-13',s2n:'',s2t:'',s3n:'',s3t:'',th:1,ct:'3 kali cicilan. Sisa masih Rp 184 juta.'},
-    {id:5,nm:'Pemeliharaan Jalan Beningsari–Munggur',py:'CV. Central Karya',nk:'',vk:188297000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2024',tm:5188000,st:'Belum Setor',pj:0,kl:'A',ci:[],s1n:'900/94.6.1/V/2026',s1t:'2026-05-13',s2n:'',s2t:'',s3n:'',s3t:'',th:1,ct:'Surat pemberitahuan 13 Mei 2026.'},
-    {id:6,nm:'Pemeliharaan Jalan Ronggo Warsito, Kec. Karanganyar',py:'CV. Ganefo',nk:'',vk:188670000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2024',tm:12113000,st:'Belum Setor',pj:0,kl:'A',ci:[],s1n:'900/84.6.8/V/2026',s1t:'2026-05-13',s2n:'',s2t:'',s3n:'',s3t:'',th:1,ct:'Juga memiliki tunggakan denda LKPD 2023.'},
-    {id:7,nm:'Pengaspalan Jalan Dukuh Rt.01/Rw.05–Pandananom',py:'CV. Sami Asih',nk:'',vk:142556000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2024',tm:8761000,st:'Cicilan',pj:0,kl:'B',ci:[{t:'2025-08-21',j:2700000,b:''},{t:'2026-01-07',j:2500000,b:''}],s1n:'900/84.6.6/V/2026',s1t:'2026-05-13',s2n:'',s2t:'',s3n:'',s3t:'',th:1,ct:'Hampir lunas. Dorong pelunasan sekaligus.'},
-    {id:8,nm:'Pembangunan Talud Jalan Matesih–Tegalgede',py:'CV. Sosro Karya',nk:'',vk:1886851000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2024',tm:45835000,st:'Belum Setor',pj:0,kl:'A',ci:[],s1n:'900/84.6.13/V/2026',s1t:'2026-05-13',s2n:'',s2t:'',s3n:'',s3t:'',th:1,ct:'TIDAK KOOPERATIF. Tidak ada kontrak aktif 2 tahun terakhir. Pertimbangkan eskalasi cepat ke TP-TGR.'},
-    {id:9,nm:'Long Segment Jl. Dayu–Pandananom, Kec. Ngargoyoso',py:'CV. Mustika Bukit Jajar',nk:'',vk:1868023000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurvol + Tidak Sesuai Spek',kat:'Belanja Modal Jalan',ta:'2024',tm:79418000,st:'Cicilan',pj:0,kl:'B',ci:[{t:'2025-12-30',j:11918000,b:''}],s1n:'900/84.6.5/V/2026',s1t:'2026-05-13',s2n:'',s2t:'',s3n:'',s3t:'',th:1,ct:'Baru 15%. Perjanjian angsuran formal belum ada.'},
-    {id:10,nm:'Rekonstruksi Jl. Ngringo–Perumnas Palur (Kurvol+Denda)',py:'CV. Sosro Karya',nk:'',vk:0,ppk:'',pptk:'',sb:'LKPD 2024',jn:'Kelebihan Pembayaran',kat:'Belanja Modal Jalan',ta:'2024',tm:183805000,st:'Belum Setor',pj:0,kl:'A',ci:[],s1n:'900/84.6.4/V/2026',s1t:'2026-05-13',s2n:'',s2t:'',s3n:'',s3t:'',th:1,ct:'Tidak kooperatif. Total kewajiban CV Sosro Karya = Rp 229,64 juta.'},
-    {id:11,nm:'Rekonstruksi Jalan Kadipekso–Jenawi (Denda)',py:'CV. Jack Kindo',nk:'',vk:4632963000,ppk:'',pptk:'',sb:'LKPD 2023',jn:'Denda Keterlambatan',kat:'Belanja Modal Jalan',ta:'2023',tm:20869000,st:'Belum Setor',pj:0,kl:'A',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Belum ada respons sejak temuan.'},
-    {id:12,nm:'Pelebaran Jalan Trengguli–Lempong (Denda)',py:'CV. Ganefo',nk:'',vk:0,ppk:'',pptk:'',sb:'LKPD 2023',jn:'Denda Keterlambatan',kat:'Belanja Modal Jalan',ta:'2023',tm:34639000,st:'Belum Setor',pj:0,kl:'A',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Belum ada respons. Terpisah dari temuan PDTT 2024.'},
-    {id:13,nm:'Pelebaran Jalan Karan–Bumi Perkemahan (Denda)',py:'CV. Anugerah Sankara Rizki',nk:'',vk:0,ppk:'',pptk:'',sb:'LKPD 2023',jn:'Denda Keterlambatan',kat:'Belanja Modal Jalan',ta:'2023',tm:482127000,st:'Cicilan',pj:0,kl:'B',ci:[{t:'2025-10-31',j:40000000,b:''},{t:'2025-12-22',j:96425000,b:''}],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:1,ct:'Sisa denda terbesar. Perjanjian angsuran belum ada.'},
-    {id:14,nm:'Rehabilitasi Jalan Karangpandan–Blora (Ruas 89)',py:'CV. Redjo Pawiro',nk:'05.9/MK/PPK.1/XI/2025',vk:4351337879,ppk:'',pptk:'',sb:'LKPD 2025',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2025',tm:192082000,st:'Belum Setor',pj:0,kl:'C',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Kooperatif — paket lain sudah lunas. Komunikasi informal sudah dilakukan.'},
-    {id:15,nm:'Rehabilitasi Jalan Karanganyar–Ngadiluwih (Ruas 27)',py:'CV. Anugrah Lima Utama',nk:'SP/PAKET-5.2.PPK/III/2025',vk:3685625000,ppk:'',pptk:'',sb:'LKPD 2025',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2025',tm:67464000,st:'Belum Setor',pj:0,kl:'C',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:''},
-    {id:16,nm:'Rekonstruksi Jalan Palur–Dalon (Ruas 41)',py:'CV. Anugrah Lima Utama',nk:'04.9/MK/PPK.1/X/2025',vk:4718188138,ppk:'',pptk:'',sb:'LKPD 2025',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2025',tm:148129000,st:'Belum Setor',pj:0,kl:'C',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:''},
-    {id:17,nm:'Rekonstruksi Jalan Ngangkruk–Jeruksawit (Ruas 24)',py:'PT. Panca Darma Puspa Wira',nk:'02.9/MK/PPK.1/X/2025',vk:14498861493,ppk:'',pptk:'',sb:'LKPD 2025',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2025',tm:32267000,st:'Belum Setor',pj:0,kl:'C',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:''},
-    {id:18,nm:'Rekonstruksi Jalan Kebakkramat–Dalon (Ruas 44)',py:'CV. Jaya Sempurna Abadi',nk:'03.9/MK/PPK.1/X/2025',vk:9000581657,ppk:'',pptk:'',sb:'LKPD 2025',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2025',tm:266485000,st:'Belum Setor',pj:0,kl:'C',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'NILAI TERBESAR LHP 2025 — prioritas utama.'},
-    {id:19,nm:'Rehabilitasi Jalan Dalon–Ngrancang (Ruas 37)',py:'CV. Perisai Bangsa',nk:'01.6/MK/PPK.5/X/2025',vk:734826285,ppk:'',pptk:'',sb:'LKPD 2025',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2025',tm:3469000,st:'Belum Setor',pj:0,kl:'C',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:''},
-    {id:20,nm:'Rehabilitasi Jalan Ngadiluwih–Matesih (Ruas 142)',py:'CV. Putra Kalingga',nk:'SP/Kons.Ngad-Mtsh.2.PPK/V/2025',vk:4179255000,ppk:'',pptk:'',sb:'LKPD 2025',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2025',tm:77099000,st:'Belum Setor',pj:0,kl:'C',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'3 paket sekaligus (Ruas 142+Jumapolo+Ruas 157), total Rp 260 juta.'},
-    {id:21,nm:'Peningkatan Jalan Jumapolo–Jumantono',py:'CV. Putra Kalingga',nk:'EP-01K2KZHBA1P3WQM9K2Y4H7HHCD',vk:5501983000,ppk:'',pptk:'',sb:'LKPD 2025',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2025',tm:72981000,st:'Belum Setor',pj:0,kl:'C',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:''},
-    {id:22,nm:'Pelebaran Jalan Tlobosempon–Matesih (Ruas 157)',py:'CV. Putra Kalingga',nk:'02.7/MK/PPK.4/XI/2025',vk:5315184828,ppk:'',pptk:'',sb:'LKPD 2025',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2025',tm:110016000,st:'Belum Setor',pj:0,kl:'C',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:''},
-    {id:23,nm:'Rehabilitasi Jalan Ombang-ombang–Blumbang & Kalisoro Kemantren (Ruas 128)',py:'CV. Putra Cakra Bersaudara',nk:'01.6/MK/PPK.4/X/2025',vk:5825184789,ppk:'',pptk:'',sb:'LKPD 2025',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2025',tm:112443000,st:'Belum Setor',pj:0,kl:'C',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:''},
-    {id:24,nm:'Rehabilitasi Jalan Kerjo–Seloromo (Ruas 100)',py:'CV. Sigra Teknik',nk:'EP.01K3FQ6Z0WNP7A166PBQKS70RD',vk:3714898000,ppk:'',pptk:'',sb:'LKPD 2025',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2025',tm:181638000,st:'Belum Setor',pj:0,kl:'C',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Pembayaran kontrak baru 90%.'},
-    {id:25,nm:'Rekonstruksi Jalan Sudimoro–Ngargoyoso (Ruas 114)',py:'PT. Triyagan Harmet Perkasa',nk:'06.9/MK/PPK.1/XI/2025',vk:14753711493,ppk:'',pptk:'',sb:'LKPD 2025',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2025',tm:200115000,st:'Belum Setor',pj:0,kl:'C',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Pembayaran kontrak baru 90%.'},
-    {id:26,nm:'Pemeliharaan Rutin Jalan Lawu – Paket 16 (Barjas)',py:'CV. Mitra Karya Lima',nk:'03.9/MK/PPK.5/X/2025',vk:1809977174,ppk:'',pptk:'',sb:'LKPD 2025',jn:'Kelebihan Pembayaran',kat:'Belanja Barang/Jasa',ta:'2025',tm:28326000,st:'Belum Setor',pj:0,kl:'C',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:''},
-    {id:27,nm:'Peningkatan Jalan Menuju SMP Bhayangkara',py:'CV. Karya Utama',nk:'',vk:883458000,ppk:'',pptk:'',sb:'LKPD 2025',jn:'Kurang Volume',kat:'Belanja Barang/Jasa',ta:'2025',tm:35768000,st:'Belum Setor',pj:0,kl:'C',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:''},
-    {id:28,nm:'Rehabilitasi Jalan Gempol–Suruh Kalang',py:'CV. Karya Utama',nk:'',vk:615184000,ppk:'',pptk:'',sb:'LKPD 2025',jn:'Kurang Volume',kat:'Belanja Barang/Jasa',ta:'2025',tm:3323000,st:'Belum Setor',pj:0,kl:'C',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:''},
-    {id:29,nm:'Rehabilitasi Jalan RW 14 Banaran Jantiharjo',py:'CV. Bumi Anugerah Putra',nk:'',vk:198432000,ppk:'',pptk:'',sb:'LKPD 2025',jn:'Kurang Volume',kat:'Belanja Barang/Jasa',ta:'2025',tm:8138000,st:'Belum Setor',pj:0,kl:'C',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:''},
-    {id:30,nm:'Rehabilitasi Jalan Tunggul Kalang–Dukuhrejo',py:'CV. Perwita Utami',nk:'',vk:198095000,ppk:'',pptk:'',sb:'LKPD 2025',jn:'Kurang Volume',kat:'Belanja Barang/Jasa',ta:'2025',tm:20784000,st:'Belum Setor',pj:0,kl:'C',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:''},
-    {id:31,nm:'Pemeliharaan Rutin Jalan Dr. Soeharso – Paket 17 (Barjas)',py:'CV. Perisai Bangsa',nk:'SPK.5/PML.10.2.BM/XI/2025',vk:398480000,ppk:'',pptk:'',sb:'LKPD 2025',jn:'Kurang Volume',kat:'Belanja Barang/Jasa',ta:'2025',tm:38362000,st:'Belum Setor',pj:0,kl:'C',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:''}
+    {id:1,nm:'Penanganan Long Segment Jl. Bendungan–Banjarharjo',py:'CV. Central Karya',nk:'',vk:4142232000,ppk:'',pptk:'',sb:'LKPD 2023',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2023',tm:426683000,st:'Cicilan',pj:0,kl:'B',ci:[{t:'2024-06-26',j:60000000,b:''},{t:'2024-09-19',j:50000000,b:''},{t:'2024-10-20',j:40000000,b:''},{t:'2024-10-27',j:75000000,b:''}],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:1,ct:'Cicilan berjalan sejak Juni 2024. Perjanjian angsuran formal belum ada — segera legalisasi.',tgll:"",nol:""},
+    {id:2,nm:'Penanganan Long Segment Jl. Beji–Pojok, Kec. Tasikmadu',py:'CV. Kedaton',nk:'',vk:7234084000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurvol + Tidak Sesuai Spek',kat:'Belanja Modal Jalan',ta:'2024',tm:345615000,st:'Cicilan',pj:0,kl:'B',ci:[{t:'2025-12-30',j:18115000,b:''}],s1n:'900/94.6.1/V/2026',s1t:'2026-05-13',s2n:'',s2t:'',s3n:'',s3t:'',th:1,ct:'Baru 5% lunas. Perjanjian angsuran belum ada.',tgll:"",nol:""},
+    {id:3,nm:'Long Segment Jl. Klodran–Sawahan, Kec. Colomadu',py:'CV. Yogya Resita',nk:'',vk:2041296000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2024',tm:10296000,st:'Belum Setor',pj:0,kl:'A',ci:[],s1n:'900/84.6.66/V/2026',s1t:'2026-05-13',s2n:'',s2t:'',s3n:'',s3t:'',th:1,ct:'Surat pemberitahuan 13 Mei 2026.',tgll:"",nol:""},
+    {id:4,nm:'Long Segment Jl. Jambangan–Pendem, Kec. Mojogedang',py:'CV. Karya Agung',nk:'',vk:10714124000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurvol + Tidak Sesuai Spek',kat:'Belanja Modal Jalan',ta:'2024',tm:309429000,st:'Cicilan',pj:0,kl:'B',ci:[{t:'2025-05-28',j:25000000,b:''},{t:'2025-07-28',j:50000000,b:''},{t:'2026-01-06',j:50000000,b:''}],s1n:'900/84.6.9/V/2026',s1t:'2026-05-13',s2n:'',s2t:'',s3n:'',s3t:'',th:1,ct:'3 kali cicilan. Sisa masih Rp 184 juta.',tgll:"",nol:""},
+    {id:5,nm:'Pemeliharaan Jalan Beningsari–Munggur',py:'CV. Central Karya',nk:'',vk:188297000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2024',tm:5188000,st:'Belum Setor',pj:0,kl:'A',ci:[],s1n:'900/94.6.1/V/2026',s1t:'2026-05-13',s2n:'',s2t:'',s3n:'',s3t:'',th:1,ct:'Surat pemberitahuan 13 Mei 2026.',tgll:"",nol:""},
+    {id:6,nm:'Pemeliharaan Jalan Ronggo Warsito, Kec. Karanganyar',py:'CV. Ganefo',nk:'',vk:188670000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2024',tm:12113000,st:'Belum Setor',pj:0,kl:'A',ci:[],s1n:'900/84.6.8/V/2026',s1t:'2026-05-13',s2n:'',s2t:'',s3n:'',s3t:'',th:1,ct:'Juga memiliki tunggakan denda LKPD 2023.',tgll:"",nol:""},
+    {id:7,nm:'Pengaspalan Jalan Dukuh Rt.01/Rw.05–Pandananom',py:'CV. Sami Asih',nk:'',vk:142556000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2024',tm:8761000,st:'Cicilan',pj:0,kl:'B',ci:[{t:'2025-08-21',j:2700000,b:''},{t:'2026-01-07',j:2500000,b:''}],s1n:'900/84.6.6/V/2026',s1t:'2026-05-13',s2n:'',s2t:'',s3n:'',s3t:'',th:1,ct:'Hampir lunas. Dorong pelunasan sekaligus.',tgll:"",nol:""},
+    {id:8,nm:'Pembangunan Talud Jalan Matesih–Tegalgede',py:'CV. Sosro Karya',nk:'',vk:1886851000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2024',tm:45835000,st:'Belum Setor',pj:0,kl:'A',ci:[],s1n:'900/84.6.13/V/2026',s1t:'2026-05-13',s2n:'',s2t:'',s3n:'',s3t:'',th:1,ct:'TIDAK KOOPERATIF. Tidak ada kontrak aktif 2 tahun terakhir. Pertimbangkan eskalasi cepat ke TP-TGR.',tgll:"",nol:""},
+    {id:9,nm:'Long Segment Jl. Dayu–Pandananom, Kec. Ngargoyoso',py:'CV. Mustika Bukit Jajar',nk:'',vk:1868023000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurvol + Tidak Sesuai Spek',kat:'Belanja Modal Jalan',ta:'2024',tm:79418000,st:'Cicilan',pj:0,kl:'B',ci:[{t:'2025-12-30',j:11918000,b:''}],s1n:'900/84.6.5/V/2026',s1t:'2026-05-13',s2n:'',s2t:'',s3n:'',s3t:'',th:1,ct:'Baru 15%. Perjanjian angsuran formal belum ada.',tgll:"",nol:""},
+    {id:10,nm:'Rekonstruksi Jl. Ngringo–Perumnas Palur (Kurvol+Denda)',py:'CV. Sosro Karya',nk:'',vk:0,ppk:'',pptk:'',sb:'LKPD 2024',jn:'Kelebihan Pembayaran',kat:'Belanja Modal Jalan',ta:'2024',tm:183805000,st:'Belum Setor',pj:0,kl:'A',ci:[],s1n:'900/84.6.4/V/2026',s1t:'2026-05-13',s2n:'',s2t:'',s3n:'',s3t:'',th:1,ct:'Tidak kooperatif. Total kewajiban CV Sosro Karya = Rp 229,64 juta.',tgll:"",nol:""},
+    {id:11,nm:'Rekonstruksi Jalan Kadipekso–Jenawi (Denda)',py:'CV. Jack Kindo',nk:'',vk:4632963000,ppk:'',pptk:'',sb:'LKPD 2023',jn:'Denda Keterlambatan',kat:'Belanja Modal Jalan',ta:'2023',tm:20869000,st:'Belum Setor',pj:0,kl:'A',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Belum ada respons sejak temuan.',tgll:"",nol:""},
+    {id:12,nm:'Pelebaran Jalan Trengguli–Lempong (Denda)',py:'CV. Ganefo',nk:'',vk:0,ppk:'',pptk:'',sb:'LKPD 2023',jn:'Denda Keterlambatan',kat:'Belanja Modal Jalan',ta:'2023',tm:34639000,st:'Belum Setor',pj:0,kl:'A',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Belum ada respons. Terpisah dari temuan PDTT 2024.',tgll:"",nol:""},
+    {id:13,nm:'Pelebaran Jalan Karan–Bumi Perkemahan (Denda)',py:'CV. Anugerah Sankara Rizki',nk:'',vk:0,ppk:'',pptk:'',sb:'LKPD 2023',jn:'Denda Keterlambatan',kat:'Belanja Modal Jalan',ta:'2023',tm:482127000,st:'Cicilan',pj:0,kl:'B',ci:[{t:'2025-10-31',j:40000000,b:''},{t:'2025-12-22',j:96425000,b:''}],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:1,ct:'Sisa denda terbesar. Perjanjian angsuran belum ada.',tgll:"",nol:""},
+    {id:14,nm:'Rehabilitasi Jalan Karangpandan–Blora (Ruas 89)',py:'CV. Redjo Pawiro',nk:'05.9/MK/PPK.1/XI/2025',vk:4351337879,ppk:'',pptk:'',sb:'LKPD 2025',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2025',tm:192082000,st:'Belum Setor',pj:0,kl:'C',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Kooperatif — paket lain sudah lunas. Komunikasi informal sudah dilakukan.',tgll:"",nol:""},
+    {id:15,nm:'Rehabilitasi Jalan Karanganyar–Ngadiluwih (Ruas 27)',py:'CV. Anugrah Lima Utama',nk:'SP/PAKET-5.2.PPK/III/2025',vk:3685625000,ppk:'',pptk:'',sb:'LKPD 2025',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2025',tm:67464000,st:'Belum Setor',pj:0,kl:'C',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'',tgll:"",nol:""},
+    {id:16,nm:'Rekonstruksi Jalan Palur–Dalon (Ruas 41)',py:'CV. Anugrah Lima Utama',nk:'04.9/MK/PPK.1/X/2025',vk:4718188138,ppk:'',pptk:'',sb:'LKPD 2025',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2025',tm:148129000,st:'Belum Setor',pj:0,kl:'C',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'',tgll:"",nol:""},
+    {id:17,nm:'Rekonstruksi Jalan Ngangkruk–Jeruksawit (Ruas 24)',py:'PT. Panca Darma Puspa Wira',nk:'02.9/MK/PPK.1/X/2025',vk:14498861493,ppk:'',pptk:'',sb:'LKPD 2025',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2025',tm:32267000,st:'Belum Setor',pj:0,kl:'C',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'',tgll:"",nol:""},
+    {id:18,nm:'Rekonstruksi Jalan Kebakkramat–Dalon (Ruas 44)',py:'CV. Jaya Sempurna Abadi',nk:'03.9/MK/PPK.1/X/2025',vk:9000581657,ppk:'',pptk:'',sb:'LKPD 2025',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2025',tm:266485000,st:'Belum Setor',pj:0,kl:'C',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'NILAI TERBESAR LHP 2025 — prioritas utama.',tgll:"",nol:""},
+    {id:19,nm:'Rehabilitasi Jalan Dalon–Ngrancang (Ruas 37)',py:'CV. Perisai Bangsa',nk:'01.6/MK/PPK.5/X/2025',vk:734826285,ppk:'',pptk:'',sb:'LKPD 2025',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2025',tm:3469000,st:'Belum Setor',pj:0,kl:'C',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'',tgll:"",nol:""},
+    {id:20,nm:'Rehabilitasi Jalan Ngadiluwih–Matesih (Ruas 142)',py:'CV. Putra Kalingga',nk:'SP/Kons.Ngad-Mtsh.2.PPK/V/2025',vk:4179255000,ppk:'',pptk:'',sb:'LKPD 2025',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2025',tm:77099000,st:'Belum Setor',pj:0,kl:'C',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'3 paket sekaligus (Ruas 142+Jumapolo+Ruas 157), total Rp 260 juta.',tgll:"",nol:""},
+    {id:21,nm:'Peningkatan Jalan Jumapolo–Jumantono',py:'CV. Putra Kalingga',nk:'EP-01K2KZHBA1P3WQM9K2Y4H7HHCD',vk:5501983000,ppk:'',pptk:'',sb:'LKPD 2025',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2025',tm:72981000,st:'Belum Setor',pj:0,kl:'C',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'',tgll:"",nol:""},
+    {id:22,nm:'Pelebaran Jalan Tlobosempon–Matesih (Ruas 157)',py:'CV. Putra Kalingga',nk:'02.7/MK/PPK.4/XI/2025',vk:5315184828,ppk:'',pptk:'',sb:'LKPD 2025',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2025',tm:110016000,st:'Belum Setor',pj:0,kl:'C',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'',tgll:"",nol:""},
+    {id:23,nm:'Rehabilitasi Jalan Ombang-ombang–Blumbang & Kalisoro Kemantren (Ruas 128)',py:'CV. Putra Cakra Bersaudara',nk:'01.6/MK/PPK.4/X/2025',vk:5825184789,ppk:'',pptk:'',sb:'LKPD 2025',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2025',tm:112443000,st:'Belum Setor',pj:0,kl:'C',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'',tgll:"",nol:""},
+    {id:24,nm:'Rehabilitasi Jalan Kerjo–Seloromo (Ruas 100)',py:'CV. Sigra Teknik',nk:'EP.01K3FQ6Z0WNP7A166PBQKS70RD',vk:3714898000,ppk:'',pptk:'',sb:'LKPD 2025',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2025',tm:181638000,st:'Belum Setor',pj:0,kl:'C',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Pembayaran kontrak baru 90%.',tgll:"",nol:""},
+    {id:25,nm:'Rekonstruksi Jalan Sudimoro–Ngargoyoso (Ruas 114)',py:'PT. Triyagan Harmet Perkasa',nk:'06.9/MK/PPK.1/XI/2025',vk:14753711493,ppk:'',pptk:'',sb:'LKPD 2025',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2025',tm:200115000,st:'Belum Setor',pj:0,kl:'C',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Pembayaran kontrak baru 90%.',tgll:"",nol:""},
+    {id:26,nm:'Pemeliharaan Rutin Jalan Lawu – Paket 16 (Barjas)',py:'CV. Mitra Karya Lima',nk:'03.9/MK/PPK.5/X/2025',vk:1809977174,ppk:'',pptk:'',sb:'LKPD 2025',jn:'Kelebihan Pembayaran',kat:'Belanja Barang/Jasa',ta:'2025',tm:28326000,st:'Belum Setor',pj:0,kl:'C',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'',tgll:"",nol:""},
+    {id:27,nm:'Peningkatan Jalan Menuju SMP Bhayangkara',py:'CV. Karya Utama',nk:'',vk:883458000,ppk:'',pptk:'',sb:'LKPD 2025',jn:'Kurang Volume',kat:'Belanja Barang/Jasa',ta:'2025',tm:35768000,st:'Belum Setor',pj:0,kl:'C',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'',tgll:"",nol:""},
+    {id:28,nm:'Rehabilitasi Jalan Gempol–Suruh Kalang',py:'CV. Karya Utama',nk:'',vk:615184000,ppk:'',pptk:'',sb:'LKPD 2025',jn:'Kurang Volume',kat:'Belanja Barang/Jasa',ta:'2025',tm:3323000,st:'Belum Setor',pj:0,kl:'C',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'',tgll:"",nol:""},
+    {id:29,nm:'Rehabilitasi Jalan RW 14 Banaran Jantiharjo',py:'CV. Bumi Anugerah Putra',nk:'',vk:198432000,ppk:'',pptk:'',sb:'LKPD 2025',jn:'Kurang Volume',kat:'Belanja Barang/Jasa',ta:'2025',tm:8138000,st:'Belum Setor',pj:0,kl:'C',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'',tgll:"",nol:""},
+    {id:30,nm:'Rehabilitasi Jalan Tunggul Kalang–Dukuhrejo',py:'CV. Perwita Utami',nk:'',vk:198095000,ppk:'',pptk:'',sb:'LKPD 2025',jn:'Kurang Volume',kat:'Belanja Barang/Jasa',ta:'2025',tm:20784000,st:'Belum Setor',pj:0,kl:'C',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'',tgll:"",nol:""},
+    {id:31,nm:'Pemeliharaan Rutin Jalan Dr. Soeharso – Paket 17 (Barjas)',py:'CV. Perisai Bangsa',nk:'SPK.5/PML.10.2.BM/XI/2025',vk:398480000,ppk:'',pptk:'',sb:'LKPD 2025',jn:'Kurang Volume',kat:'Belanja Barang/Jasa',ta:'2025',tm:38362000,st:'Belum Setor',pj:0,kl:'C',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'',tgll:"",nol:""}
+  ,
+    {id:32,nm:'Long Segment Ruas Jalan Kayuapak–Ngaliyan, Kec. Karanganyar',py:'CV. Legra Sejahtera',nk:'',vk:5784818000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurvol + Tidak Sesuai Spek',kat:'Belanja Modal Jalan',ta:'2024',tm:150472000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas 31/12/2025',tgll:'2025-12-31',nol:''},
+    {id:33,nm:'Long Segment Ruas Jalan Jumantono–Matesih, Kec. Jumantono',py:'CV. Putra Kalingga',nk:'',vk:4292911000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurvol + Tidak Sesuai Spek',kat:'Belanja Modal Jalan',ta:'2024',tm:159826000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas 01/09/2025',tgll:'2025-09-01',nol:''},
+    {id:34,nm:'Pemeliharaan Berkala Jalan Tentara Pelajar, Wahidin Sudiro Husodo, Gatot Subroto',py:'CV. Sigra Tehnik',nk:'',vk:7138033000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurvol + Tidak Sesuai Spek',kat:'Belanja Modal Jalan',ta:'2024',tm:296406000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas 31/12/2025',tgll:'2025-12-31',nol:''},
+    {id:35,nm:'Long Segment Ruas Jalan Jenawi–Seloromo, Kec. Jenawi',py:'CV. Putra Kalingga',nk:'',vk:7443331000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurvol + Tidak Sesuai Spek',kat:'Belanja Modal Jalan',ta:'2024',tm:78973000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas 30/06/2025',tgll:'2025-06-30',nol:''},
+    {id:36,nm:'Long Segment Ruas Jalan Ocak-acik–Jati, Kec. Jaten',py:'CV. Setia Budi',nk:'',vk:2496678000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurvol + Tidak Sesuai Spek',kat:'Belanja Modal Jalan',ta:'2024',tm:47259000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas 17/10/2025',tgll:'2025-10-17',nol:''},
+    {id:37,nm:'Pemeliharaan Jalan Paket 6 Baturan–Sumber',py:'CV. Satria Utama',nk:'',vk:196904000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2024',tm:3578000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas 17/12/2024',tgll:'2024-12-17',nol:''},
+    {id:38,nm:'Pemeliharaan Jalan Paket 5 Ngiri–Truneng',py:'CV. Redjo Pawiro',nk:'',vk:192886000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2024',tm:14849000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas 26/11/2025',tgll:'2025-11-26',nol:''},
+    {id:39,nm:'Long Segment Ruas Jalan Ngasem–Colomadu, Kec. Colomadu',py:'CV. Putra Kalingga',nk:'',vk:8242115000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurvol + Tidak Sesuai Spek',kat:'Belanja Modal Jalan',ta:'2024',tm:200011000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas 01/09/2025',tgll:'2025-09-01',nol:''},
+    {id:40,nm:'Long Segment Ruas Jalan Matesih–Tawangmangu',py:'CV. Sigra Tehnik',nk:'',vk:5925890000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2024',tm:17130000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas 31/12/2025',tgll:'2025-12-31',nol:''},
+    {id:41,nm:'Pemeliharaan Jalan MGR Sugiyo Pranoto',py:'CV. Legra Sejahtera',nk:'',vk:188985000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurvol + Tidak Sesuai Spek',kat:'Belanja Modal Jalan',ta:'2024',tm:6282000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas Tah.I 17/12/2024, Tah.II 31/12/2025',tgll:'2025-12-31',nol:''},
+    {id:42,nm:'Pemeliharaan Jalan Bangsri–Plosorejo',py:'CV. Legra Sejahtera',nk:'',vk:185981000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurvol + Tidak Sesuai Spek',kat:'Belanja Modal Jalan',ta:'2024',tm:27255000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas 31/12/2025',tgll:'2025-12-31',nol:''},
+    {id:43,nm:'Pengaspalan Jalan Lingkungan Jetis RT.04/RW.03, Kel. Karanganyar',py:'CV. Maju Lancar Berkah',nk:'',vk:94376000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2024',tm:4171000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas 17/01/2025',tgll:'2025-01-17',nol:''},
+    {id:44,nm:'Pemeliharaan Jalan Mayjend Yudomo SHD',py:'CV. Azza',nk:'',vk:187763000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2024',tm:7379000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas 09/09/2025',tgll:'2025-09-09',nol:''},
+    {id:45,nm:'Peningkatan Jalan Botok–Sumberrejo',py:'CV. Tunjung Jaya',nk:'',vk:182126000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2024',tm:8124000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas 06/09/2025',tgll:'2025-09-06',nol:''},
+    {id:46,nm:'Pemeliharaan Jalan Paket 9 Jalan Blorong–Kakum',py:'CV. Redjo Pawiro',nk:'',vk:193884000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2024',tm:2556000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas 26/11/2025',tgll:'2025-11-26',nol:''},
+    {id:47,nm:'Peningkatan Jalan Dayu–Kedungulo',py:'CV. Duta Kalingga',nk:'',vk:2466041000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurvol + Tidak Sesuai Spek',kat:'Belanja Modal Jalan',ta:'2024',tm:45054000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas 31/12/2025',tgll:'2025-12-31',nol:''},
+    {id:48,nm:'Long Segment Ruas Jalan Karangsari–Pringombo, Kec. Jatiyoso',py:'CV. Anugerah Lima Utama',nk:'',vk:4631550000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurvol + Tidak Sesuai Spek',kat:'Belanja Modal Jalan',ta:'2024',tm:108651000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas 31/12/2024',tgll:'2024-12-31',nol:''},
+    {id:49,nm:'Long Segment Ruas Jalan Kranggan–Tangkilan, Kec. Tasikmadu',py:'CV. Cipta Graha',nk:'',vk:4137742000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurvol + Tidak Sesuai Spek',kat:'Belanja Modal Jalan',ta:'2024',tm:83095000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas 23/12/2024',tgll:'2024-12-23',nol:''},
+    {id:50,nm:'Long Segment Ruas Jalan Kutho–Ngargoyoso',py:'CV. Central Karya',nk:'',vk:6524735000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurvol + Tidak Sesuai Spek',kat:'Belanja Modal Jalan',ta:'2024',tm:391751000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas 31/12/2024',tgll:'2024-12-31',nol:''},
+    {id:51,nm:'Long Segment Ruas Jalan Jumantoro–Gudang Lawas, Kec. Jumapolo',py:'CV. Anugerah Lima Utama',nk:'',vk:3053263000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurvol + Tidak Sesuai Spek',kat:'Belanja Modal Jalan',ta:'2024',tm:58305000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas 31/12/2024',tgll:'2024-12-31',nol:''},
+    {id:52,nm:'Long Segment Ruas Jalan Domas–Jatikurung, Kec. Mojogedang',py:'CV. Karya Manunggal Berkah',nk:'',vk:1795156000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurvol + Tidak Sesuai Spek',kat:'Belanja Modal Jalan',ta:'2024',tm:91764000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas 31/12/2024',tgll:'2024-12-31',nol:''},
+    {id:53,nm:'Long Segment Ruas Jalan Colomadu–Kalipati, Kec. Colomadu',py:'CV. Jasem Makmur Abadi',nk:'',vk:2993307000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurvol + Tidak Sesuai Spek',kat:'Belanja Modal Jalan',ta:'2024',tm:181021000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas 30/12/2024',tgll:'2024-12-30',nol:''},
+    {id:54,nm:'Long Segment Ruas Jalan Gaum–Gedong, Kec. Tasikmadu',py:'CV. Bangun Makmur',nk:'',vk:5777844000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurvol + Tidak Sesuai Spek',kat:'Belanja Modal Jalan',ta:'2024',tm:205794000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas 31/12/2024',tgll:'2024-12-31',nol:''},
+    {id:55,nm:'Long Segment Ruas Jalan Tugu–Kebak, Kec. Jumantono',py:'CV. Anugerah Lima Utama',nk:'',vk:4369883000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2024',tm:3760000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas 31/12/2024',tgll:'2024-12-31',nol:''},
+    {id:56,nm:'Long Segment Ruas Jalan Pandananom–Dukuh, Kec. Ngargoyoso',py:'CV. Legra Sejahtera',nk:'',vk:3081765000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurvol + Tidak Sesuai Spek',kat:'Belanja Modal Jalan',ta:'2024',tm:53005000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas 06/12/2024',tgll:'2024-12-06',nol:''},
+    {id:57,nm:'Long Segment Ruas Jalan Garut–Jatiharjo, Kec. Jatipuro',py:'CV. Anugerah Lima Utama',nk:'',vk:3029844000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurvol + Tidak Sesuai Spek',kat:'Belanja Modal Jalan',ta:'2024',tm:32040000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas 31/12/2024',tgll:'2024-12-31',nol:''},
+    {id:58,nm:'Long Segment No. Ruas 126 Jalan Wonorejo–Plesungan',py:'CV. Karya Utama',nk:'',vk:7512513000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurvol + Tidak Sesuai Spek',kat:'Belanja Modal Jalan',ta:'2024',tm:144480000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas 13/12/2024',tgll:'2024-12-13',nol:''},
+    {id:59,nm:'Pengaspalan Jalan Jalan Dahlia dan Jalan Mawar, Dimoro, Kel. Karanganyar',py:'CV. Maju Lancar Berkah',nk:'',vk:188625000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2024',tm:1148000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas 17/01/2025',tgll:'2025-01-17',nol:''},
+    {id:60,nm:'Long Segment Ruas Jalan Karang–Berjo, Kec. Karangpandan',py:'CV. Jasem Makmur Abadi',nk:'',vk:4794122000,ppk:'',pptk:'',sb:'PDTT 2024',jn:'Kurvol + Tidak Sesuai Spek',kat:'Belanja Modal Jalan',ta:'2024',tm:117771000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas 30/12/2024',tgll:'2024-12-30',nol:''},
+    {id:61,nm:'Ruas Jalan Tohudan–Gedongan, Kec. Colomadu (Denda)',py:'CV. Tunjung Jaya',nk:'',vk:2312508108,ppk:'',pptk:'',sb:'LKPD 2024',jn:'Denda Keterlambatan',kat:'Belanja Modal Jalan',ta:'2024',tm:6938000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas Tah.I 28/12/2024, Tah.II 31/12/2024',tgll:'2024-12-31',nol:''},
+    {id:62,nm:'Rehabilitasi Jalan Matesih–Karangpandan Ruas 143 (Kurvol+Denda)',py:'PT. Triyagan Harmet Perkasa',nk:'',vk:0,ppk:'',pptk:'',sb:'LKPD 2024',jn:'Kelebihan Pembayaran',kat:'Belanja Modal Jalan',ta:'2024',tm:200504000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas 31/12/2025',tgll:'2025-12-31',nol:''},
+    {id:63,nm:'Pembangunan Jembatan Ngrancang Ruas Dalon–Ngrancang (Denda)',py:'CV. Setia Budi',nk:'',vk:0,ppk:'',pptk:'',sb:'LKPD 2024',jn:'Denda Keterlambatan',kat:'Belanja Modal Jalan',ta:'2024',tm:321527000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas Tah.I 17/10/2025, Tah.II 30/12/2025',tgll:'2025-12-30',nol:''},
+    {id:64,nm:'Long Segment Ruas Jalan Plesungan–Kragan',py:'CV. Wahyu Adi',nk:'',vk:5106666000,ppk:'',pptk:'',sb:'LKPD 2023',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2023',tm:271743000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas Tah.I 26/06/2024, Tah.II 19/09/2024, Tah.III 31/12/2025',tgll:'2025-12-31',nol:''},
+    {id:65,nm:'Pelebaran Jalan Macanan–Pulosari',py:'CV. Legra Sejahtera',nk:'',vk:2603598000,ppk:'',pptk:'',sb:'LKPD 2023',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2023',tm:113073000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas Tah.I 26/06/2024, Tah.II 31/12/2025',tgll:'2025-12-31',nol:''},
+    {id:66,nm:'Long Segment Ruas Jalan Malanggaten–Buntar',py:'CV. Wahyu Adi',nk:'',vk:4980961000,ppk:'',pptk:'',sb:'LKPD 2023',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2023',tm:544967000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas 5 tahap cicilan, selesai 31/12/2025',tgll:'2025-12-31',nol:''},
+    {id:67,nm:'Long Segment Ruas Jalan Pendem–Ngargoyoso',py:'CV. Legra Sejahtera',nk:'',vk:5553201000,ppk:'',pptk:'',sb:'LKPD 2023',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2023',tm:80599000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas Tah.I 26/06/2024, Tah.II 31/12/2025',tgll:'2025-12-31',nol:''},
+    {id:68,nm:'Long Segment Ruas Jalan Ngargoyoso–Jenawi',py:'CV. Perisai Bangsa',nk:'',vk:1676374000,ppk:'',pptk:'',sb:'LKPD 2023',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2023',tm:63161000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas Tah.I 26/06/2024, Tah.II 12/08/2025, Tah.III 31/12/2025',tgll:'2025-12-31',nol:''},
+    {id:69,nm:'Long Segment Ruas Jalan Puntukrejo–Ngranten',py:'CV. Jasem Makmur Abadi',nk:'',vk:2842151000,ppk:'',pptk:'',sb:'LKPD 2023',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2023',tm:8211000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas sekaligus 08/05/2024',tgll:'2024-05-08',nol:''},
+    {id:70,nm:'Rekonstruksi Jalan Beji–Pojok',py:'CV. Tunjung Jaya',nk:'',vk:2461235000,ppk:'',pptk:'',sb:'LKPD 2023',jn:'Kurang Volume',kat:'Belanja Modal Jalan',ta:'2023',tm:6514000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas sekaligus 14/05/2024',tgll:'2024-05-14',nol:''},
+    {id:71,nm:'Pembangunan Jembatan Nglurah, Kec. Tawangmangu (Denda)',py:'CV. Gempoer Jagating Bahurekso',nk:'',vk:1392979279,ppk:'',pptk:'',sb:'LKPD 2023',jn:'Denda Keterlambatan',kat:'Belanja Modal Jalan',ta:'2023',tm:20895000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas Tah.I 29/12/2023, Tah.II 31/12/2024',tgll:'2024-12-31',nol:''},
+    {id:72,nm:'Peningkatan Jalan Kerjo–Gempolan No. Ruas 103 (Denda)',py:'CV. Gempoer Jagating Bahurekso',nk:'',vk:2172390991,ppk:'',pptk:'',sb:'LKPD 2023',jn:'Denda Keterlambatan',kat:'Belanja Modal Jalan',ta:'2023',tm:28242000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas Tah.I 29/12/2023, Tah.II 31/12/2024',tgll:'2024-12-31',nol:''},
+    {id:73,nm:'Rehabilitasi Jalan Ombang-ombang–Blumbang & Kalisoro Kemantren Ruas 128 (Denda)',py:'CV. Putra Cakra Bersaudara',nk:'01.6/MK/PPK.4/X/2025',vk:5851408403,ppk:'',pptk:'',sb:'LKPD 2025',jn:'Denda Keterlambatan',kat:'Belanja Modal Jalan',ta:'2025',tm:31630000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas — 6 hari keterlambatan',tgll:'',nol:''},
+    {id:74,nm:'Rehabilitasi Jalan Kerjo–Seloromo Ruas 100 (Denda)',py:'CV. Sigra Teknik',nk:'EP.01K3FQ6Z0WNP7A166PBQKS70RD',vk:3714898000,ppk:'',pptk:'',sb:'LKPD 2025',jn:'Denda Keterlambatan',kat:'Belanja Modal Jalan',ta:'2025',tm:13388000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas — 4 hari keterlambatan',tgll:'',nol:''},
+    {id:75,nm:'Peningkatan Jalan Menuju Kebon 9-11 Cetho Gumeng Kec. Jenawi (Denda)',py:'CV. Harapan Karya Perkasa',nk:'SPK.6/PLP.4.2.BM/X/2025',vk:392869000,ppk:'',pptk:'',sb:'LKPD 2025',jn:'Denda Keterlambatan',kat:'Belanja Barang/Jasa',ta:'2025',tm:4248000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas — 12 hari keterlambatan',tgll:'',nol:''},
+    {id:76,nm:'Paket 15 Pemeliharaan Rutin Jalan Wilayah Selatan Karanganyar (Denda)',py:'CV. Wahyu Adi',nk:'SPK.5/PML.14.2.BM/XI/2025',vk:398535000,ppk:'',pptk:'',sb:'LKPD 2025',jn:'Denda Keterlambatan',kat:'Belanja Barang/Jasa',ta:'2025',tm:2514000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas — 7 hari keterlambatan',tgll:'',nol:''},
+    {id:77,nm:'Paket 17 Pemeliharaan Rutin Jalan Soeharso (Denda)',py:'CV. Perisai Bangsa',nk:'SPK.5/PML.10.2.BM/XI/2025',vk:398480000,ppk:'',pptk:'',sb:'LKPD 2025',jn:'Denda Keterlambatan',kat:'Belanja Barang/Jasa',ta:'2025',tm:2154000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas — 6 hari keterlambatan',tgll:'',nol:''},
+    {id:78,nm:'Paket 24 Pemeliharaan Rutin Jalan Matesih–Tawangmangu, Pringgosari, dll (Denda)',py:'CV. Azza',nk:'SPK.5/PML.8.2.BM/XI/2025',vk:298432000,ppk:'',pptk:'',sb:'LKPD 2025',jn:'Denda Keterlambatan',kat:'Belanja Barang/Jasa',ta:'2025',tm:3227000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas — 12 hari keterlambatan',tgll:'',nol:''},
+    {id:79,nm:'Renovasi Rumah Dinas Wakil Bupati',py:'CV. Redjo Pawiro',nk:'600.1.15/15.15.1/PPK.1/III/2025',vk:1531920200,ppk:'',pptk:'',sb:'LKPD 2025',jn:'Kelebihan Pembayaran',kat:'Belanja Modal Gedung',ta:'2025',tm:17951000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas sebelum LHP diterima — paket Gedung DPUPR',tgll:'',nol:''},
+    {id:80,nm:'Pembangunan Puskesmas Jaten 1',py:'CV. Berlin Isvara Konstruksindo',nk:'600.1.15/33.15/PPK.1/X/2025',vk:1719613000,ppk:'',pptk:'',sb:'LKPD 2025',jn:'Kelebihan Pembayaran',kat:'Belanja Modal Gedung',ta:'2025',tm:45420000,st:'Lunas',pj:1,kl:'L',ci:[],s1n:'',s1t:'',s2n:'',s2t:'',s3n:'',s3t:'',th:0,ct:'Lunas sebelum LHP diterima — paket Gedung DPUPR',tgll:'',nol:''}
   ];
   save();
 }
@@ -539,11 +790,11 @@ function goPage(id){
   document.querySelectorAll('.ni').forEach(n=>n.classList.remove('on'));
   document.getElementById('pg-'+id).classList.add('on');
   document.querySelector(`.ni[data-page="${id}"]`)&&document.querySelector(`.ni[data-page="${id}"]`).classList.add('on');
-  const titles={dashboard:'Dashboard',semua:'Semua Data',belum:'Belum Setor',cicilan:'Cicilan Berjalan',lhp25:'LHP TA 2025',tambah:'Tambah Paket Baru',impor:'Import Excel'};
-  const subs={dashboard:'Rekapitulasi temuan BPK RI — Bidang Bina Marga DPUPR Karanganyar',semua:'Seluruh paket pekerjaan yang memiliki temuan BPK',belum:'Penyedia yang belum melakukan setoran apapun — perlu tindak lanjut',cicilan:'Penyedia yang sedang dalam proses pembayaran cicilan',lhp25:'Temuan LHP BPK TA 2025 — SP1 belum diterbitkan',tambah:'Tambah data paket pekerjaan baru ke sistem',impor:'Upload file Excel untuk update data massal'};
+  const titles={dashboard:'Dashboard',semua:'Semua Data',belum:'Belum Setor',cicilan:'Cicilan Berjalan',lhp25:'LHP TA 2025',lunas:'Data Sudah Lunas',tambah:'Tambah Paket Baru',impor:'Import Excel',setup:'Setup Awal & Konfigurasi Firebase'};
+  const subs={dashboard:'Rekapitulasi temuan BPK RI — Bidang Bina Marga DPUPR Karanganyar',semua:'Seluruh paket pekerjaan yang memiliki temuan BPK',belum:'Penyedia yang belum melakukan setoran apapun — perlu tindak lanjut',cicilan:'Penyedia yang sedang dalam proses pembayaran cicilan',lhp25:'Temuan LHP BPK TA 2025 — SP1 belum diterbitkan',lunas:'Penyedia yang telah menyelesaikan seluruh kewajiban pengembalian ke Kas Daerah',tambah:'Tambah data paket pekerjaan baru ke sistem',impor:'Upload file Excel untuk update data massal',setup:'Inisialisasi data pertama kali ke Firestore'};
   document.getElementById('pg-title').textContent=titles[id]||id;
   document.getElementById('pg-sub').textContent=subs[id]||'';
-  const renders={dashboard:rDash,semua:rSemua,belum:rBelum,cicilan:rCicilan,lhp25:rLhp25};
+  const renders={dashboard:rDash,semua:rSemua,belum:rBelum,cicilan:rCicilan,lhp25:rLhp25,lunas:rLunas,setup:refreshSetupStatus};
   if(renders[id])renders[id]();
 }
 
@@ -561,7 +812,7 @@ function rDash(){
     <div class="sc green"><div class="sl">Total Sudah Disetor</div><div class="sv">${rpM(setor)}</div><div class="ss">${pct(setor,tot)}% dari total temuan</div></div>
     <div class="sc amber"><div class="sl">Paket Belum Setor</div><div class="sv">${bs}</div><div class="ss">dari ${DATA.length} total paket</div></div>
     <div class="sc blue"><div class="sl">Paket Cicilan</div><div class="sv">${cc}</div><div class="ss">${tanpaPerj} tanpa perjanjian resmi</div></div>
-    <div class="sc green"><div class="sl">Paket Lunas</div><div class="sv">${lunas}</div><div class="ss">selesai</div></div>
+    <div class="sc green"><div class="sl">Paket Lunas</div><div class="sv">${lunas}</div><div class="ss">selesai — " + rpM(DATA.filter(d=>d.st==='Lunas').reduce((s,d)=>s+d.tm,0)) + " nilai temuan</div></div>
     <div class="sc"><div class="sl">Total Paket</div><div class="sv">${DATA.length}</div><div class="ss">LHP 2023–2025</div></div>`;
 
   let al='';
@@ -664,7 +915,7 @@ function openEdit(id){
   sv('eSb',d.sb);sv('eJn',d.jn);sv('eKat',d.kat);sv('eTA',d.ta);
   sv('eTm',d.tm);sv('eSt',d.st);sv('ePj',d.pj?'1':'0');sv('eKl',d.kl);
   sv('eS1n',d.s1n);sv('eS1t',d.s1t);sv('eS2n',d.s2n);sv('eS2t',d.s2t);
-  sv('eS3n',d.s3n);sv('eS3t',d.s3t);sv('eTh',d.th);sv('eCt',d.ct);
+  sv('eS3n',d.s3n);sv('eS3t',d.s3t);sv('eTh',d.th);sv('eCt',d.ct);sv('eTgll',d.tgll||'');sv('eNol',d.nol||'');
   rCiList();
   document.getElementById('mo-edit').classList.add('open');
 }
@@ -682,14 +933,14 @@ function addCi(){tempCi.push({t:today(),j:0,b:''});rCiList();}
 function updCi(i,f,v){if(tempCi[i])tempCi[i][f]=v;updCiTot();}
 function delCi(i){tempCi.splice(i,1);rCiList();}
 function updCiTot(){document.getElementById('ciTot').textContent=rp(tempCi.reduce((s,c)=>s+(+c.j||0),0));}
-function saveEdit(){
+async function saveEdit(){
   const idx=DATA.findIndex(x=>x.id===editId);if(idx<0)return;
   const g=id=>document.getElementById(id).value;
-  DATA[idx]={...DATA[idx],nm:g('eNm'),py:g('ePy'),nk:g('eNk'),vk:+g('eVk'),ppk:g('ePpk'),pptk:g('ePptk'),sb:g('eSb'),jn:g('eJn'),kat:g('eKat'),ta:g('eTA'),tm:+g('eTm'),st:g('eSt'),pj:+g('ePj'),kl:g('eKl'),s1n:g('eS1n'),s1t:g('eS1t'),s2n:g('eS2n'),s2t:g('eS2t'),s3n:g('eS3n'),s3t:g('eS3t'),th:+g('eTh'),ct:g('eCt'),ci:[...tempCi]};
-  save();closeMo('mo-edit');toast('Perubahan disimpan');
-  const cur=document.querySelector('.page.on').id.replace('pg-','');
-  const renders={dashboard:rDash,semua:rSemua,belum:rBelum,cicilan:rCicilan,lhp25:rLhp25};
-  if(renders[cur])renders[cur]();
+  const updated={...DATA[idx],nm:g('eNm'),py:g('ePy'),nk:g('eNk'),vk:+g('eVk'),ppk:g('ePpk'),pptk:g('ePptk'),sb:g('eSb'),jn:g('eJn'),kat:g('eKat'),ta:g('eTA'),tm:+g('eTm'),st:g('eSt'),pj:+g('ePj'),kl:g('eKl'),s1n:g('eS1n'),s1t:g('eS1t'),s2n:g('eS2n'),s2t:g('eS2t'),s3n:g('eS3n'),s3t:g('eS3t'),th:+g('eTh'),ct:g('eCt'),tgll:g('eTgll'),nol:g('eNol'),ci:[...tempCi]};
+  try{
+    await fsSave(updated);
+    closeMo('mo-edit');toast('✓ Perubahan disimpan ke Firestore');
+  }catch(e){ toast('Gagal simpan: '+e.message,'err'); }
 }
 
 // ── HISTORI ──
@@ -713,12 +964,16 @@ function openHist(id){
 }
 
 // ── TAMBAH ──
-function simpanBaru(){
+async function simpanBaru(){
   const g=id=>document.getElementById(id).value;
   if(!g('tNm')||!g('tPy')){toast('Nama paket dan penyedia wajib diisi','err');return;}
   const newId=DATA.length?Math.max(...DATA.map(d=>d.id))+1:1;
-  DATA.push({id:newId,nm:g('tNm'),py:g('tPy'),nk:g('tNk'),vk:+g('tVk'),ppk:g('tPpk'),pptk:g('tPptk'),sb:g('tSb'),jn:g('tJn'),kat:g('tKat'),ta:g('tTA'),tm:+g('tTm'),st:g('tSt'),pj:+g('tPj'),kl:g('tKl'),ci:[],s1n:g('tS1n'),s1t:g('tS1t'),s2n:g('tS2n'),s2t:g('tS2t'),s3n:g('tS3n'),s3t:g('tS3t'),th:+g('tTh'),ct:g('tCt')});
-  save();toast('Paket berhasil ditambahkan');resetForm();
+  const obj={id:newId,nm:g('tNm'),py:g('tPy'),nk:g('tNk'),vk:+g('tVk'),ppk:g('tPpk'),pptk:g('tPptk'),sb:g('tSb'),jn:g('tJn'),kat:g('tKat'),ta:g('tTA'),tm:+g('tTm'),st:g('tSt'),pj:+g('tPj'),kl:g('tKl'),ci:[],s1n:g('tS1n'),s1t:g('tS1t'),s2n:g('tS2n'),s2t:g('tS2t'),s3n:g('tS3n'),s3t:g('tS3t'),th:+g('tTh'),ct:g('tCt'),tgll:g('tTgll')||'',nol:g('tNol')||''};
+  try{
+    await fsSave(obj);
+    toast('✓ Paket berhasil ditambahkan ke Firestore');
+    resetForm();goPage('semua');
+  }catch(e){ toast('Gagal simpan: '+e.message,'err'); }
 }
 function resetForm(){['tNm','tPy','tNk','tVk','tPpk','tPptk','tTm','tS1n','tS1t','tS2n','tS2t','tS3n','tS3t','tCt'].forEach(id=>{const e=document.getElementById(id);if(e)e.value='';});}
 
@@ -728,7 +983,12 @@ function konfirmHapus(id){
   document.getElementById('hNm').textContent=(d?d.py+' — '+d.nm.slice(0,60):'');
   document.getElementById('mo-hapus').classList.add('open');
 }
-function doHapus(){DATA=DATA.filter(d=>d.id!==hapusId);save();closeMo('mo-hapus');toast('Data dihapus');rSemua();}
+async function doHapus(){
+  try{
+    await fsDelete(hapusId);
+    closeMo('mo-hapus');toast('✓ Data dihapus dari Firestore');
+  }catch(e){ toast('Gagal hapus: '+e.message,'err'); }
+}
 
 // ── MODAL UTIL ──
 function closeMo(id){document.getElementById(id).classList.remove('open');}
@@ -754,7 +1014,7 @@ function dlExcel(){
   try{
     var wb=XLSX.utils.book_new();
     var ws={};
-    var hdr=["No","Nama Paket","Penyedia Jasa","No Kontrak","Nilai Kontrak","Nama PPK","Nama PPTK","Sumber Temuan","Jenis Temuan","Kategori Belanja","Tahun Anggaran","Nilai Temuan","Sudah Disetor","Sisa Piutang","Persen Lunas","Status","Perjanjian","Kelompok","Tahap SP","No SP1","Tgl SP1","No SP2","Tgl SP2","No SP3","Tgl SP3","Histori Cicilan","Catatan"];
+    var hdr=["No","Nama Paket","Penyedia Jasa","No Kontrak","Nilai Kontrak","Nama PPK","Nama PPTK","Sumber Temuan","Jenis Temuan","Kategori Belanja","Tahun Anggaran","Nilai Temuan","Sudah Disetor","Sisa Piutang","Persen Lunas","Status","Perjanjian","Kelompok","Tahap SP","No SP1","Tgl SP1","No SP2","Tgl SP2","No SP3","Tgl SP3","Histori Cicilan","Tgl Lunas","No Pelunasan","Catatan"];
     for(var h=0;h<hdr.length;h++) ws[encCol(h)+"1"]={v:hdr[h],t:"s"};
     for(var i=0;i<DATA.length;i++){
       var d=DATA[i];
@@ -786,6 +1046,8 @@ function dlExcel(){
         String(d.s3n||""),
         String(d.s3t||""),
         (d.ci||[]).map(function(c){return fmtD(c.t)+": "+rp(c.j)+(c.b?" ("+c.b+")":"");}).join(" | "),
+        String(d.tgll?fmtD(d.tgll):""),
+        String(d.nol||""),
         String(d.ct||"")
       ];
       var r=String(i+2);
@@ -827,43 +1089,57 @@ function dlTemplate(){
 }
 
 function importExcel(inp){
-  const file=inp.files[0];if(!file)return;
-  const reader=new FileReader();
+  var file=inp.files[0]; if(!file) return;
+  var reader=new FileReader();
   reader.onload=function(e){
     try{
-      const wb=XLSX.read(e.target.result,{type:"array"});
-      const rows=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
-      let add=0,upd=0;
+      var wb=XLSX.read(e.target.result,{type:"array"});
+      var rows=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
+      var add=0, upd=0, allRows=[];
       rows.forEach(function(r){
-        if(!r["Nama Paket"]||!r["Penyedia Jasa"])return;
-        const ex=DATA.find(d=>d.nm===r["Nama Paket"]&&d.py===r["Penyedia Jasa"]);
-        const thIdx=["Belum SP","SP1","SP2","SP3","Eskalasi"].indexOf(r["Tahap SP"]||"Belum SP");
-        var nk=r["No Kontrak"]||r["No. Kontrak"]||"";
-        var vk=+(r["Nilai Kontrak"]||r["Nilai Kontrak Rp"]||0);
-        var tm=+(r["Nilai Temuan"]||r["Nilai Temuan Rp"]||0);
-        var s1n=r["No SP1"]||r["No. SP1"]||"";
-        var s1t=r["Tgl SP1"]||"";
-        var s2n=r["No SP2"]||r["No. SP2"]||"";
-        var s2t=r["Tgl SP2"]||"";
-        const ob={nm:r["Nama Paket"],py:r["Penyedia Jasa"],nk:nk,
-          vk:vk,ppk:r["Nama PPK"]||"",pptk:r["Nama PPTK"]||"",
-          sb:r["Sumber Temuan"]||"LKPD 2025",jn:r["Jenis Temuan"]||"Kurang Volume",
-          kat:r["Kategori Belanja"]||"Belanja Modal Jalan",ta:String(r["Tahun Anggaran"]||"2025"),
-          tm:tm,st:r["Status Pembayaran"]||"Belum Setor",
-          pj:r["Perjanjian Angsuran"]==="Ada"?1:0,kl:r["Kelompok"]||"C",
-          s1n:s1n,s1t:s1t,s2n:s2n,s2t:s2t,
-          s3n:"",s3t:"",th:thIdx<0?0:thIdx,ct:r["Catatan"]||""};
-        if(ex){Object.assign(ex,ob);upd++;}
-        else{DATA.push({id:DATA.length?Math.max.apply(null,DATA.map(d=>d.id))+1:1,ci:[],...ob});add++;}
+        if(!r["Nama Paket"]||!r["Penyedia Jasa"]) return;
+        var ex=DATA.find(d=>d.nm===r["Nama Paket"]&&d.py===r["Penyedia Jasa"]);
+        var thIdx=["Belum SP","SP1","SP2","SP3","Eskalasi"].indexOf(r["Tahap SP"]||"Belum SP");
+        var obj={
+          nm:r["Nama Paket"], py:r["Penyedia Jasa"],
+          nk:r["No Kontrak"]||"", vk:+(r["Nilai Kontrak"]||0),
+          ppk:r["Nama PPK"]||"", pptk:r["Nama PPTK"]||"",
+          sb:r["Sumber Temuan"]||"LKPD 2025",
+          jn:r["Jenis Temuan"]||"Kurang Volume",
+          kat:r["Kategori Belanja"]||"Belanja Modal Jalan",
+          ta:String(r["Tahun Anggaran"]||"2025"),
+          tm:+(r["Nilai Temuan"]||0),
+          st:r["Status Pembayaran"]||"Belum Setor",
+          pj:r["Perjanjian Angsuran"]==="Ada"?1:0,
+          kl:r["Kelompok"]||"C",
+          s1n:r["No SP1"]||"", s1t:r["Tgl SP1"]||"",
+          s2n:r["No SP2"]||"", s2t:r["Tgl SP2"]||"",
+          s3n:"", s3t:"", th:thIdx<0?0:thIdx,
+          tgll:r["Tgl Lunas"]||"", nol:r["No Pelunasan"]||"",
+          ct:r["Catatan"]||"", ci:[]
+        };
+        if(ex){ obj.id=ex.id; obj.ci=ex.ci||[]; upd++; }
+        else{ obj.id=DATA.length?Math.max(...DATA.map(d=>d.id))+add+1:add+1; add++; }
+        allRows.push(obj);
       });
-      save();
-      document.getElementById("import-result").innerHTML=`<div class="al blue"><i class="ti ti-check"></i><span>Import selesai: <strong>${add} paket baru</strong> ditambahkan, <strong>${upd} paket</strong> diperbarui.</span></div>`;
-      toast("Import berhasil: "+add+" baru, "+upd+" diperbarui");
+      if(!allRows.length){ toast('Tidak ada baris valid di file','err'); return; }
+      if(!DB){ toast('Database belum terhubung','err'); return; }
+      const {writeBatch,doc,collection,serverTimestamp} = window._FS;
+      const batch = writeBatch(DB);
+      allRows.forEach(r=>{
+        const obj={...r}; delete obj._docId;
+        obj.updatedAt=serverTimestamp();
+        batch.set(doc(DB,'paket',String(r.id)), obj);
+      });
+      batch.commit().then(()=>{
+        document.getElementById("import-result").innerHTML='<div class="al blue"><i class="ti ti-check"></i><span>Import selesai: <strong>'+add+' paket baru</strong> ditambahkan, <strong>'+upd+' paket</strong> diperbarui.</span></div>';
+        toast("Import berhasil: "+add+" baru, "+upd+" diperbarui");
+      }).catch(e=>toast('Gagal import: '+e.message,'err'));
     }catch(err){
-      document.getElementById("import-result").innerHTML=`<div class="al red"><i class="ti ti-x"></i><span>Gagal membaca file: ${err.message}. Pastikan format sesuai template.</span></div>`;
+      document.getElementById("import-result").innerHTML='<div class="al red"><i class="ti ti-x"></i><span>Gagal membaca file: '+err.message+'</span></div>';
     }
   };
-  reader.readAsArrayBuffer(file);inp.value="";
+  reader.readAsArrayBuffer(file); inp.value="";
 }
 function dropFile(e){
   e.preventDefault();
@@ -875,12 +1151,39 @@ function dropFile(e){
 // ── TOAST ──
 function toast(msg,type){const t=document.getElementById('toast');t.textContent=msg;t.style.background=type==='err'?'#e02424':'#1c2030';t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2800);}
 
+// ── LUNAS PAGE ──
+function rLunas(){
+  var q=(document.getElementById('qlun').value||'').toLowerCase();
+  var fs=document.getElementById('flunSb').value;
+  var rows=DATA.filter(function(d){
+    if(d.st!=='Lunas') return false;
+    if(q&&!d.nm.toLowerCase().includes(q)&&!d.py.toLowerCase().includes(q)) return false;
+    if(fs&&d.sb!==fs) return false;
+    return true;
+  });
+  var total=rows.reduce(function(s,d){return s+d.tm;},0);
+  document.getElementById('tbl-lunas').innerHTML=rows.map(function(d,i){
+    return '<tr><td>'+(i+1)+'</td><td><strong>'+d.py+'</strong></td><td style="font-size:11px;max-width:200px">'+d.nm+'</td><td>'+d.sb+'</td><td style="font-size:11px">'+d.jn+'</td><td class="nr" style="color:var(--green);font-weight:700">'+rp(d.tm)+'</td><td style="font-size:11px">'+(d.tgll?fmtD(d.tgll):'—')+'</td><td style="font-size:11px">'+(d.nol||'—')+'</td><td style="font-size:11px;color:var(--tx2)">'+(d.ct||'—')+'</td><td><button class="ib e" onclick="openEdit('+d.id+')" title="Edit"><i class="ti ti-edit"></i></button></td></tr>';
+  }).join('');
+  document.getElementById('cnt-lunas').textContent='Menampilkan '+rows.length+' paket lunas — Total nilai temuan: '+rp(total);
+}
+
 // ── NAV BINDING ──
+function refreshSetupStatus(){
+  const box = document.getElementById('setup-status-msg');
+  if(!box) return;
+  if(!window.DB || !firebaseConfig || Object.values(window._FS||{}).length===0){
+    box.innerHTML = '<span style="color:var(--amber)">⚠ Mode Offline — Firebase belum dikonfigurasi. Data tersimpan di localStorage browser ini saja.</span>';
+  } else {
+    box.innerHTML = '<span style="color:var(--green)">● Terhubung ke Firebase Firestore — data tersinkron real-time ke semua perangkat.</span>';
+  }
+}
+
 document.querySelectorAll('.ni').forEach(n=>n.addEventListener('click',function(){goPage(this.dataset.page);}));
 
-// ── INIT ──
-load();
-rDash();
+// ── INIT — Firebase ──
+// Firebase diinisialisasi oleh <script type="module"> di atas
+// startRealtime() dipanggil otomatis setelah DOMContentLoaded
 </script>
 </body>
 </html>
